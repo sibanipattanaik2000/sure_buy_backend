@@ -1,11 +1,16 @@
 generator client {
   provider = "prisma-client-js"
-  output   = "../src/generated/prisma"
 }
 
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+}
+
+enum ProductCondition {
+  EXCELLENT
+  LIKE_NEW
+  GOOD
 }
 
 model User {
@@ -15,9 +20,108 @@ model User {
   email        String   @unique
   passwordHash String
   phone        String?  @unique
-
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
+  reviews Review[]
+
   @@index([email])
+}
+
+model Product {
+  id            Int              @id @default(autoincrement())
+  slug          String           @unique
+  brand         String
+  name          String
+  category      String
+  condition     ProductCondition
+  price         Decimal          @db.Decimal(10, 2)
+  originalPrice Decimal          @db.Decimal(10, 2)
+  warranty      String
+  description   String
+  rating        Decimal          @default(0) @db.Decimal(2, 1)
+  reviewCount   Int              @default(0)
+  emiFrom       Decimal?         @db.Decimal(10, 2)
+  active        Boolean          @default(true)
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  variants   ProductVariant[]
+  images     ProductImage[]
+  highlights ProductHighlight[]
+  reviews    Review[]
+
+  @@index([category])
+  @@index([brand])
+  @@index([condition])
+  @@index([price])
+  @@index([active])
+  @@index([createdAt])
+}
+
+model ProductVariant {
+  id            Int      @id @default(autoincrement())
+  productId     Int
+  storage       String
+  color         String
+  price         Decimal  @db.Decimal(10, 2)
+  originalPrice Decimal  @db.Decimal(10, 2)
+  stock         Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  images ProductImage[]
+
+  @@unique([productId, storage, color])
+  @@index([productId])
+}
+
+model ProductImage {
+  id        Int      @id @default(autoincrement())
+  productId Int
+  variantId Int?
+  url       String
+  altText   String?
+  position  Int      @default(0)
+  createdAt DateTime @default(now())
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  variant ProductVariant? @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  @@index([productId, position])
+  @@index([variantId, position])
+}
+
+model ProductHighlight {
+  id        Int    @id @default(autoincrement())
+  productId Int
+  text      String
+  position  Int    @default(0)
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId, position])
+}
+
+model Review {
+  id               Int      @id @default(autoincrement())
+  productId        Int
+  userId           String
+  rating           Int
+  comment          String
+  verifiedPurchase Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, userId])
+  @@index([productId])
+  @@index([userId])
+  @@index([createdAt])
 }

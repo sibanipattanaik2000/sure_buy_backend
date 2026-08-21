@@ -10,7 +10,7 @@ import {
   notFoundHandler,
   errorHandler,
 } from "./middleware/error.middleware";
-
+import productRoutes from "./routes/product.routes";
 const app = express();
 
 /**
@@ -69,6 +69,7 @@ app.get("/api/v1/health", (_req, res) => {
  * API routes
  */
 app.use("/api/v1/auth", authRoutes);
+app.use("/api/v1/products", productRoutes);
 
 /**
  * 404 handler

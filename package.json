@@ -7,6 +7,9 @@
     "build": "tsc",
     "start": "node dist/server.js"
   },
+  "prisma": {
+  "seed": "tsx prisma/seed.ts"
+},
   "keywords": [],
   "author": "",
   "license": "ISC",
@@ -31,6 +34,6 @@
     "@types/node": "^26.2.0",
     "prisma": "^6.19.3",
     "tsx": "^4.23.12",
-    "typescript": "^7.0.2"
+    "typescript": "^6.0.3"
   }
 }
