@@ -14,7 +14,7 @@ import {
   updateProfileSchema,
   changePasswordSchema,
 } from "../validators/auth.validator";
-
+import { ZodError } from "zod";
 export async function register(req: Request, res: Response) {
   try {
     const input = registerSchema.parse(req.body);
@@ -27,14 +27,25 @@ export async function register(req: Request, res: Response) {
       data: user,
     });
   } catch (error) {
-    if (error instanceof Error) {
-      if (error.message === "EMAIL_ALREADY_EXISTS") {
-        return res.status(409).json({
-          success: false,
-          message: "Email already registered",
-        });
-      }
+    if (error instanceof ZodError) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid registration data",
+        errors: error.flatten().fieldErrors,
+      });
     }
+
+    if (
+      error instanceof Error &&
+      error.message === "EMAIL_ALREADY_EXISTS"
+    ) {
+      return res.status(409).json({
+        success: false,
+        message: "Email already registered",
+      });
+    }
+
+    console.error("REGISTER ERROR:", error);
 
     return res.status(500).json({
       success: false,
@@ -60,13 +71,22 @@ export async function login(req: Request, res: Response) {
       },
     });
   } catch (error) {
-    if (error instanceof Error) {
-      if (error.message === "INVALID_CREDENTIALS") {
-        return res.status(401).json({
-          success: false,
-          message: "Invalid email or password",
-        });
-      }
+    if (error instanceof ZodError) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid login data",
+        errors: error.flatten().fieldErrors,
+      });
+    }
+
+    if (
+      error instanceof Error &&
+      error.message === "INVALID_CREDENTIALS"
+    ) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid email or password",
+      });
     }
 
     console.error("LOGIN ERROR:", error);

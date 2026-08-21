@@ -102,12 +102,32 @@ export async function updateProfile(
   userId: string,
   input: UpdateProfileInput,
 ) {
-  const user = await prisma.user.update({
+  const user = await prisma.user.findUnique({
+    where: {
+      id: userId,
+    },
+  });
+
+  if (!user) {
+    throw new Error("USER_NOT_FOUND");
+  }
+
+  const updatedUser = await prisma.user.update({
     where: {
       id: userId,
     },
     data: {
-      ...input,
+      ...(input.firstName !== undefined && {
+        firstName: input.firstName,
+      }),
+
+      ...(input.lastName !== undefined && {
+        lastName: input.lastName,
+      }),
+
+      ...(input.phone !== undefined && {
+        phone: input.phone,
+      }),
     },
     select: {
       id: true,
@@ -119,7 +139,7 @@ export async function updateProfile(
     },
   });
 
-  return user;
+  return updatedUser;
 }
 export async function changePassword(
   userId: string,
