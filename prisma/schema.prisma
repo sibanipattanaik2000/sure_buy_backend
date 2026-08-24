@@ -46,6 +46,11 @@ enum MediaType {
   VIDEO
 }
 
+enum UserRole {
+  CUSTOMER
+  ADMIN
+}
+
 model User {
   id           String   @id @default(cuid())
   firstName    String
@@ -53,6 +58,7 @@ model User {
   email        String   @unique
   passwordHash String
   phone        String?  @unique
+  role         UserRole @default(CUSTOMER)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
