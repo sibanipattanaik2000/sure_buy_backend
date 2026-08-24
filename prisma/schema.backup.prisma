@@ -240,15 +240,15 @@ model Order {
 
   currency String @default("INR")
 
-  shippingFullName     String
-  shippingPhone        String
+  shippingFullName      String
+  shippingPhone         String
   shippingAddressLine1 String
   shippingAddressLine2 String?
   shippingArea         String?
   shippingCity         String
   shippingState        String
   shippingPostalCode   String
-  shippingCountry      String  @default("India")
+  shippingCountry      String @default("India")
   shippingLandmark     String?
 
   items OrderItem[]

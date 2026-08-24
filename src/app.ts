@@ -3,18 +3,23 @@ import cors from "cors";
 import helmet from "helmet";
 import cookieParser from "cookie-parser";
 import rateLimit from "express-rate-limit";
-import addressRoutes from "./routes/address.routes";
+
 import { env } from "./config/env";
+
 import authRoutes from "./routes/auth.routes";
+import productRoutes from "./routes/product.routes";
+import addressRoutes from "./routes/address.routes";
+import cartRoutes from "./routes/cart.routes";
+import orderRoutes from "./routes/order.routes";
 import {
   notFoundHandler,
   errorHandler,
 } from "./middleware/error.middleware";
-import productRoutes from "./routes/product.routes";
+
 const app = express();
 
 /**
- * Security
+ * Security headers
  */
 app.use(helmet());
 
@@ -29,16 +34,15 @@ app.use(
 );
 
 /**
- * Rate limiting
- *
- * This is a general application-level limit.
- * Authentication-specific limits can be added later.
+ * General API rate limiting
  */
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 300,
+
   standardHeaders: "draft-8",
   legacyHeaders: false,
+
   message: {
     success: false,
     message: "Too many requests. Please try again later.",
@@ -50,8 +54,18 @@ app.use("/api", apiLimiter);
 /**
  * Request parsing
  */
-app.use(express.json({ limit: "1mb" }));
-app.use(express.urlencoded({ extended: true }));
+app.use(
+  express.json({
+    limit: "1mb",
+  }),
+);
+
+app.use(
+  express.urlencoded({
+    extended: true,
+  }),
+);
+
 app.use(cookieParser());
 
 /**
@@ -69,8 +83,13 @@ app.get("/api/v1/health", (_req, res) => {
  * API routes
  */
 app.use("/api/v1/auth", authRoutes);
+
 app.use("/api/v1/products", productRoutes);
+
 app.use("/api/v1/addresses", addressRoutes);
+
+app.use("/api/v1/cart", cartRoutes);
+app.use("/api/v1/orders", orderRoutes);
 /**
  * 404 handler
  */
