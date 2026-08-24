@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import {
   getProducts,
   GetProductsParams,
+   getProductBySlug as getProductBySlugService,
 } from "../services/product.service";
 
 export async function listProducts(req: Request, res: Response) {
@@ -65,6 +66,40 @@ export async function listProducts(req: Request, res: Response) {
     return res.status(500).json({
       success: false,
       message: "Failed to fetch products",
+    });
+  }
+}
+
+export async function getProductBySlug(req: Request, res: Response) {
+  try {
+    const { slug } = req.params;
+
+    if (!slug || typeof slug !== "string") {
+      return res.status(400).json({
+        success: false,
+        message: "Product slug is required",
+      });
+    }
+
+    const product = await getProductBySlugService(slug);
+
+    if (!product) {
+      return res.status(404).json({
+        success: false,
+        message: "Product not found",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: product,
+    });
+  } catch (error) {
+    console.error("GET PRODUCT ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch product",
     });
   }
 }

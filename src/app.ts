@@ -3,7 +3,7 @@ import cors from "cors";
 import helmet from "helmet";
 import cookieParser from "cookie-parser";
 import rateLimit from "express-rate-limit";
-
+import addressRoutes from "./routes/address.routes";
 import { env } from "./config/env";
 import authRoutes from "./routes/auth.routes";
 import {
@@ -70,7 +70,7 @@ app.get("/api/v1/health", (_req, res) => {
  */
 app.use("/api/v1/auth", authRoutes);
 app.use("/api/v1/products", productRoutes);
-
+app.use("/api/v1/addresses", addressRoutes);
 /**
  * 404 handler
  */

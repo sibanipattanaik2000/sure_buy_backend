@@ -151,3 +151,61 @@ export async function getProducts(params: GetProductsParams) {
     },
   };
 }
+export async function getProductBySlug(slug: string) {
+  const product = await prisma.product.findUnique({
+    where: {
+      slug,
+    },
+    include: {
+      images: {
+        orderBy: {
+          position: "asc",
+        },
+      },
+
+      highlights: {
+        orderBy: {
+          position: "asc",
+        },
+      },
+
+      variants: {
+        orderBy: {
+          createdAt: "asc",
+        },
+
+        include: {
+          images: {
+            orderBy: {
+              position: "asc",
+            },
+          },
+        },
+      },
+
+      reviews: {
+        orderBy: {
+          createdAt: "desc",
+        },
+
+        take: 20,
+
+        include: {
+          user: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  if (!product || !product.active) {
+    return null;
+  }
+
+  return product;
+}
