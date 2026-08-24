@@ -58,10 +58,21 @@ export const updateProfileSchema = z.object({
     .max(50, "Last name is too long")
     .optional(),
 
+  email: z
+    .string()
+    .trim()
+    .email("Please enter a valid email address")
+    .max(255, "Email is too long")
+    .transform((value) => value.toLowerCase())
+    .optional(),
+
   phone: z
     .string()
     .trim()
-    .regex(/^[6-9]\d{9}$/, "Please enter a valid Indian phone number")
+    .regex(
+      /^[6-9]\d{9}$/,
+      "Please enter a valid Indian phone number",
+    )
     .optional(),
 });
 export const changePasswordSchema = z.object({

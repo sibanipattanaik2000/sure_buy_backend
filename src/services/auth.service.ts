@@ -123,6 +123,10 @@ export async function updateProfile(
         lastName: input.lastName,
       }),
 
+      ...(input.email !== undefined && {
+        email: input.email,
+      }),
+
       ...(input.phone !== undefined && {
         phone: input.phone,
       }),
