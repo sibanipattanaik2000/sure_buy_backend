@@ -1,6 +1,4 @@
-import { prisma } from "../config/database";
-
-import {
+import { prisma } from "../config/prisma";import {
   hashPassword,
   comparePassword,
 } from "../utils/password";

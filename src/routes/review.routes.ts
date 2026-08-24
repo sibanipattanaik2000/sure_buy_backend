@@ -9,7 +9,7 @@ import {
 
 import { authenticate } from "../middleware/auth.middleware";
 
-const router = Router();
+const router = Router({ mergeParams: true });
 
 router.get("/", listReviews);
 

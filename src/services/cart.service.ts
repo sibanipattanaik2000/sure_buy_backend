@@ -1,6 +1,5 @@
 import { Prisma } from "@prisma/client";
-import { prisma } from "../config/database";
-import type {
+import { prisma } from "../config/prisma";import type {
   AddCartItemInput,
   UpdateCartItemInput,
 } from "../validators/cart.validator";

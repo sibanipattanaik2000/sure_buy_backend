@@ -2,7 +2,7 @@ import { Router } from "express";
 
 import {
   listProducts,
-  getProductBySlug,
+  getProductByIdentifier,
 } from "../controllers/product.controller";
 
 import reviewRoutes from "../routes/review.routes";
@@ -10,8 +10,8 @@ import reviewRoutes from "../routes/review.routes";
 const router = Router();
 
 router.get("/", listProducts);
-router.get("/:slug", getProductBySlug);
 
 router.use("/:productId/reviews", reviewRoutes);
+router.get("/:identifier", getProductByIdentifier);
 
 export default router;

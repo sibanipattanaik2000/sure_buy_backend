@@ -1,4 +1,4 @@
-import { prisma } from "../config/database";
+import { prisma } from "../config/prisma";
 export interface GetProductsParams {
   page: number;
   limit: number;
@@ -151,11 +151,26 @@ export async function getProducts(params: GetProductsParams) {
     },
   };
 }
-export async function getProductBySlug(slug: string) {
-  const product = await prisma.product.findUnique({
+export async function getProductByIdentifier(
+  identifier: string,
+) {
+  const numericId = Number(identifier);
+
+  const product = await prisma.product.findFirst({
     where: {
-      slug,
+      active: true,
+
+      OR: [
+        ...(Number.isInteger(numericId) && numericId > 0
+          ? [{ id: numericId }]
+          : []),
+
+        {
+          slug: identifier,
+        },
+      ],
     },
+
     include: {
       images: {
         orderBy: {
@@ -202,10 +217,6 @@ export async function getProductBySlug(slug: string) {
       },
     },
   });
-
-  if (!product || !product.active) {
-    return null;
-  }
 
   return product;
 }

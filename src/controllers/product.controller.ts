@@ -2,26 +2,21 @@ import { Request, Response } from "express";
 import {
   getProducts,
   GetProductsParams,
-   getProductBySlug as getProductBySlugService,
+  getProductByIdentifier as getProductByIdentifierService,
 } from "../services/product.service";
 
 export async function listProducts(req: Request, res: Response) {
   try {
     const page = Math.max(Number(req.query.page) || 1, 1);
-    const limit = Math.min(
-      Math.max(Number(req.query.limit) || 20, 1),
-      100
-    );
+    const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
 
     const condition =
-      typeof req.query.condition === "string"
-        ? req.query.condition
-        : undefined;
+      typeof req.query.condition === "string" ? req.query.condition : undefined;
 
     const allowedConditions = ["EXCELLENT", "LIKE_NEW", "GOOD"] as const;
 
     const validCondition = allowedConditions.includes(
-      condition as (typeof allowedConditions)[number]
+      condition as (typeof allowedConditions)[number],
     )
       ? (condition as GetProductsParams["condition"])
       : undefined;
@@ -30,17 +25,10 @@ export async function listProducts(req: Request, res: Response) {
       page,
       limit,
       search:
-        typeof req.query.search === "string"
-          ? req.query.search
-          : undefined,
+        typeof req.query.search === "string" ? req.query.search : undefined,
       category:
-        typeof req.query.category === "string"
-          ? req.query.category
-          : undefined,
-      brand:
-        typeof req.query.brand === "string"
-          ? req.query.brand
-          : undefined,
+        typeof req.query.category === "string" ? req.query.category : undefined,
+      brand: typeof req.query.brand === "string" ? req.query.brand : undefined,
       condition: validCondition,
       minPrice:
         req.query.minPrice !== undefined
@@ -70,18 +58,18 @@ export async function listProducts(req: Request, res: Response) {
   }
 }
 
-export async function getProductBySlug(req: Request, res: Response) {
+export async function getProductByIdentifier(req: Request, res: Response) {
   try {
-    const { slug } = req.params;
+    const { identifier } = req.params;
 
-    if (!slug || typeof slug !== "string") {
+    if (!identifier || typeof identifier !== "string") {
       return res.status(400).json({
         success: false,
-        message: "Product slug is required",
+        message: "Product ID or slug is required",
       });
     }
 
-    const product = await getProductBySlugService(slug);
+    const product = await getProductByIdentifierService(identifier);
 
     if (!product) {
       return res.status(404).json({
