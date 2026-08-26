@@ -39,6 +39,7 @@ enum PaymentMethod {
   COD
   UPI
   CARD
+  EMI
 }
 
 enum MediaType {
