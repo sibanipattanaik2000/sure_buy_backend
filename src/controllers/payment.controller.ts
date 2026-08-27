@@ -1,4 +1,13 @@
-import type { Response } from "express";
+import type { Request, Response } from "express";
+import crypto from "crypto";
+
+import { env } from "../config/env";
+import { prisma } from "../config/prisma";
+
+import {
+  PaymentStatus,
+  OrderStatus,
+} from "@prisma/client";
 
 import type { AuthRequest } from "../middleware/auth.middleware";
 
@@ -7,6 +16,11 @@ import {
   verifyRazorpayPayment,
 } from "../services/payment.service";
 
+/**
+ * Create Razorpay payment order
+ *
+ * POST /api/v1/payments/orders/:orderId
+ */
 export async function createPaymentOrder(
   req: AuthRequest,
   res: Response,
@@ -28,11 +42,10 @@ export async function createPaymentOrder(
       });
     }
 
-    const payment =
-      await createRazorpayOrder(
-        req.userId,
-        orderId,
-      );
+    const payment = await createRazorpayOrder(
+      req.userId,
+      orderId,
+    );
 
     return res.status(201).json({
       success: true,
@@ -84,6 +97,11 @@ export async function createPaymentOrder(
   }
 }
 
+/**
+ * Verify Razorpay Checkout payment
+ *
+ * POST /api/v1/payments/orders/:orderId/verify
+ */
 export async function verifyPayment(
   req: AuthRequest,
   res: Response,
@@ -134,7 +152,8 @@ export async function verifyPayment(
 
     return res.status(200).json({
       success: true,
-      message: "Payment verified successfully",
+      message:
+        "Payment verified successfully",
       data: result,
     });
   } catch (error) {
@@ -154,7 +173,8 @@ export async function verifyPayment(
         case "PAYMENT_NOT_FOUND":
           return res.status(404).json({
             success: false,
-            message: "Payment record not found",
+            message:
+              "Payment record not found",
           });
 
         case "INVALID_PAYMENT_RESPONSE":
@@ -177,6 +197,362 @@ export async function verifyPayment(
       success: false,
       message:
         "Unable to verify payment",
+    });
+  }
+}
+
+/**
+ * Razorpay webhook
+ *
+ * POST /api/v1/payments/webhook
+ *
+ * This endpoint is intentionally NOT authenticated
+ * with our JWT middleware.
+ *
+ * Razorpay authenticates the request using:
+ *
+ * x-razorpay-signature
+ */
+export async function razorpayWebhook(
+  req: Request,
+  res: Response,
+) {
+  try {
+    const signature =
+      req.headers["x-razorpay-signature"];
+
+    if (typeof signature !== "string") {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Missing Razorpay webhook signature",
+      });
+    }
+
+    /**
+     * The signature MUST be calculated against
+     * the exact raw request body.
+     */
+    if (!req.rawBody) {
+      console.error(
+        "Razorpay webhook raw body missing",
+      );
+
+      return res.status(400).json({
+        success: false,
+        message:
+          "Webhook raw body unavailable",
+      });
+    }
+
+    const expectedSignature =
+      crypto
+        .createHmac(
+          "sha256",
+          env.RAZORPAY_WEBHOOK_SECRET,
+        )
+        .update(req.rawBody)
+        .digest("hex");
+
+    /**
+     * Constant-time signature comparison.
+     */
+    const signatureBuffer =
+      Buffer.from(signature);
+
+    const expectedBuffer =
+      Buffer.from(expectedSignature);
+
+    if (
+      signatureBuffer.length !==
+      expectedBuffer.length
+    ) {
+      console.warn(
+        "Invalid Razorpay webhook signature",
+      );
+
+      return res.status(401).json({
+        success: false,
+        message:
+          "Invalid webhook signature",
+      });
+    }
+
+    const signaturesMatch =
+      crypto.timingSafeEqual(
+        signatureBuffer,
+        expectedBuffer,
+      );
+
+    if (!signaturesMatch) {
+      console.warn(
+        "Invalid Razorpay webhook signature",
+      );
+
+      return res.status(401).json({
+        success: false,
+        message:
+          "Invalid webhook signature",
+      });
+    }
+
+    const event = req.body?.event;
+
+    const paymentEntity =
+      req.body?.payload?.payment?.entity;
+
+    const razorpayOrderId =
+      paymentEntity?.order_id;
+
+    const razorpayPaymentId =
+      paymentEntity?.id;
+
+    if (
+      typeof event !== "string"
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Invalid Razorpay webhook event",
+      });
+    }
+
+    /**
+     * Ignore events that are not relevant to
+     * our payment state machine.
+     */
+    if (
+      event !== "payment.authorized" &&
+      event !== "payment.captured" &&
+      event !== "payment.failed"
+    ) {
+      return res.status(200).json({
+        success: true,
+        message:
+          "Webhook acknowledged",
+      });
+    }
+
+    if (
+      typeof razorpayOrderId !==
+      "string"
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Razorpay order ID missing",
+      });
+    }
+
+    /**
+     * Find the payment that OUR application
+     * created.
+     *
+     * Never create a payment solely because a
+     * webhook contains an unknown provider ID.
+     */
+    const payment =
+      await prisma.payment.findUnique({
+        where: {
+          providerOrderId:
+            razorpayOrderId,
+        },
+      });
+
+    if (!payment) {
+      console.warn(
+        "Razorpay webhook payment not found:",
+        razorpayOrderId,
+      );
+
+      /**
+       * Return 200 so Razorpay does not
+       * repeatedly retry an event that doesn't
+       * belong to our application.
+       */
+      return res.status(200).json({
+        success: true,
+        message:
+          "Webhook acknowledged",
+      });
+    }
+
+    /**
+     * payment.failed
+     */
+    if (
+      event === "payment.failed"
+    ) {
+      await prisma.$transaction(
+        async (tx) => {
+          /**
+           * Do not overwrite a successful payment
+           * with a later failure event.
+           */
+          const currentPayment =
+            await tx.payment.findUnique({
+              where: {
+                id: payment.id,
+              },
+            });
+
+          if (!currentPayment) {
+            return;
+          }
+
+          if (
+            currentPayment.status ===
+              PaymentStatus.PAID ||
+            currentPayment.status ===
+              PaymentStatus.REFUNDED
+          ) {
+            return;
+          }
+
+          await tx.payment.update({
+            where: {
+              id: payment.id,
+            },
+
+            data: {
+              status:
+                PaymentStatus.FAILED,
+
+              providerPaymentId:
+                typeof razorpayPaymentId ===
+                "string"
+                  ? razorpayPaymentId
+                  : undefined,
+
+              failureCode:
+                typeof paymentEntity?.error_code ===
+                "string"
+                  ? paymentEntity.error_code
+                  : null,
+
+              failureMessage:
+                typeof paymentEntity?.error_description ===
+                "string"
+                  ? paymentEntity.error_description
+                  : null,
+            },
+          });
+
+          await tx.order.update({
+            where: {
+              id: payment.orderId,
+            },
+
+            data: {
+              paymentStatus:
+                PaymentStatus.FAILED,
+            },
+          });
+        },
+      );
+
+      return res.status(200).json({
+        success: true,
+        message:
+          "Payment failure processed",
+      });
+    }
+
+    /**
+     * payment.authorized / payment.captured
+     */
+    await prisma.$transaction(
+      async (tx) => {
+        const currentPayment =
+          await tx.payment.findUnique({
+            where: {
+              id: payment.id,
+            },
+          });
+
+        if (!currentPayment) {
+          return;
+        }
+
+        /**
+         * Captured is the final successful
+         * payment state.
+         *
+         * Never downgrade PAID to AUTHORIZED.
+         */
+        if (
+          currentPayment.status ===
+            PaymentStatus.PAID ||
+          currentPayment.status ===
+            PaymentStatus.REFUNDED
+        ) {
+          return;
+        }
+
+        const isCaptured =
+          event ===
+          "payment.captured";
+
+        await tx.payment.update({
+          where: {
+            id: payment.id,
+          },
+
+          data: {
+            status: isCaptured
+              ? PaymentStatus.PAID
+              : PaymentStatus.AUTHORIZED,
+
+            providerPaymentId:
+              typeof razorpayPaymentId ===
+              "string"
+                ? razorpayPaymentId
+                : undefined,
+          },
+        });
+
+        await tx.order.update({
+          where: {
+            id: payment.orderId,
+          },
+
+          data: {
+            paymentStatus:
+              isCaptured
+                ? PaymentStatus.PAID
+                : PaymentStatus.AUTHORIZED,
+
+            /**
+             * Only mark the order confirmed
+             * after Razorpay confirms capture.
+             */
+            status: isCaptured
+              ? OrderStatus.CONFIRMED
+              : undefined,
+          },
+        });
+      },
+    );
+
+    return res.status(200).json({
+      success: true,
+      message:
+        "Payment webhook processed",
+    });
+  } catch (error) {
+    console.error(
+      "RAZORPAY WEBHOOK ERROR:",
+      error,
+    );
+
+    /**
+     * 500 tells Razorpay that processing failed,
+     * allowing Razorpay to retry the webhook.
+     */
+    return res.status(500).json({
+      success: false,
+      message:
+        "Webhook processing failed",
     });
   }
 }

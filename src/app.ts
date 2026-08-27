@@ -56,6 +56,17 @@ app.use("/api", apiLimiter);
 app.use(
   express.json({
     limit: "1mb",
+
+    verify: (req, _res, buf) => {
+      const request = req as express.Request;
+
+      if (
+        request.originalUrl ===
+        "/api/v1/payments/webhook"
+      ) {
+        request.rawBody = Buffer.from(buf);
+      }
+    },
   }),
 );
 
