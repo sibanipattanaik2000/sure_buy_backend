@@ -45,10 +45,14 @@ export async function createSellRequest(
   input: CreateSellRequestInput,
 ) {
   const product = await prisma.product.findFirst({
-    where: {
-      id: input.productId,
-      active: true,
+  where: {
+    id: input.productId,
+    active: true,
+    category: {
+      equals: "Smartphones",
+      mode: "insensitive",
     },
+  },
     select: {
       id: true,
       name: true,
