@@ -11,6 +11,7 @@ import productRoutes from "./routes/product.routes";
 import addressRoutes from "./routes/address.routes";
 import cartRoutes from "./routes/cart.routes";
 import orderRoutes from "./routes/order.routes";
+import sellRoutes from "./routes/sell.routes";
 import {
   notFoundHandler,
   errorHandler,
@@ -91,6 +92,7 @@ app.use("/api/v1/addresses", addressRoutes);
 app.use("/api/v1/cart", cartRoutes);
 app.use("/api/v1/orders", orderRoutes);
 app.use("/api/v1/wishlist", wishlistRoutes);
+app.use("/api/v1/sell", sellRoutes);
 /**
  * 404 handler
  */

@@ -52,6 +52,21 @@ enum UserRole {
   ADMIN
 }
 
+enum SellRequestStatus {
+  DRAFT
+  SUBMITTED
+  UNDER_REVIEW
+  INSPECTION_SCHEDULED
+  INSPECTED
+  OFFERED
+  ACCEPTED
+  PICKUP_SCHEDULED
+  PICKED_UP
+  COMPLETED
+  CANCELLED
+  REJECTED
+}
+
 model User {
   id           String   @id @default(cuid())
   firstName    String
@@ -69,6 +84,7 @@ model User {
   orders        Order[]
   refreshTokens RefreshToken[]
   wishlistItems WishlistItem[]
+  sellRequests  SellRequest[]
 
   @@index([email])
 }
@@ -114,6 +130,7 @@ model Product {
   cartItems     CartItem[]
   orderItems    OrderItem[]
   wishlistItems WishlistItem[]
+  sellRequests  SellRequest[]
 
   @@index([category])
   @@index([brand])
@@ -353,4 +370,57 @@ model OrderItem {
   @@index([orderId])
   @@index([productId])
   @@index([variantId])
+}
+
+model SellRequest {
+  id String @id @default(cuid())
+
+  userId String
+  productId Int
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  workingStatus String
+  screenCondition String
+  deviceCondition String
+  batteryCondition String
+
+  estimatedValue Decimal @db.Decimal(10, 2)
+  finalValue Decimal? @db.Decimal(10, 2)
+
+  pickupAddress String
+  pickupDate DateTime
+  pickupSlot String
+
+  status SellRequestStatus @default(SUBMITTED)
+
+  media SellRequestMedia[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([productId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model SellRequestMedia {
+  id String @id @default(cuid())
+
+  sellRequestId String
+
+  sellRequest SellRequest @relation(fields: [sellRequestId], references: [id], onDelete: Cascade)
+
+  url String
+  key String
+  mimeType String
+  size Int
+  position Int @default(0)
+
+  createdAt DateTime @default(now())
+
+  @@unique([sellRequestId, key])
+  @@index([sellRequestId, position])
 }
