@@ -1,7 +1,4 @@
-import {
-  PrismaClient,
-  ProductCondition,
-} from "@prisma/client";
+import { PrismaClient, ProductCondition } from "@prisma/client";
 
 const prisma = new PrismaClient();
 
@@ -10,7 +7,7 @@ const products = [
     slug: "apple-iphone-15-128gb",
     brand: "Apple",
     name: "iPhone 15",
-    category: "iPhone",
+    category: "Smartphones",
     condition: ProductCondition.EXCELLENT,
     price: 54999,
     originalPrice: 69900,
@@ -58,7 +55,7 @@ const products = [
     slug: "samsung-galaxy-s24-256gb",
     brand: "Samsung",
     name: "Galaxy S24",
-    category: "Samsung",
+    category: "Smartphones",
     condition: ProductCondition.LIKE_NEW,
     price: 49999,
     originalPrice: 74999,
@@ -106,7 +103,7 @@ const products = [
     slug: "oneplus-12-256gb",
     brand: "OnePlus",
     name: "OnePlus 12",
-    category: "OnePlus",
+    category: "Smartphones",
     condition: ProductCondition.EXCELLENT,
     price: 44999,
     originalPrice: 64999,
@@ -147,7 +144,7 @@ const products = [
     slug: "google-pixel-8-128gb",
     brand: "Google",
     name: "Pixel 8",
-    category: "Google",
+    category: "Smartphones",
     condition: ProductCondition.GOOD,
     price: 32999,
     originalPrice: 75999,
@@ -185,76 +182,191 @@ const products = [
   },
 ];
 
-async function main() {
-  console.log("🌱 Seeding products...");
+async function seedProduct(productData: (typeof products)[number]) {
+  const { variants, images, highlights, ...product } = productData;
 
-  for (const productData of products) {
-    const { variants, images, highlights, ...product } = productData;
+  /*
+   * ---------------------------------------------------------
+   * PRODUCT
+   * ---------------------------------------------------------
+   */
 
-    const createdProduct = await prisma.product.upsert({
+  const createdProduct = await prisma.product.upsert({
+    where: {
+      slug: product.slug,
+    },
+    update: product,
+    create: product,
+  });
+
+  /*
+   * ---------------------------------------------------------
+   * PRODUCT VARIANTS
+   * ---------------------------------------------------------
+   *
+   * IMPORTANT:
+   * Never delete variants here.
+   *
+   * OrderItem.variantId uses onDelete: Restrict because
+   * historical orders must keep their original variant.
+   *
+   * ProductVariant has:
+   *
+   * @@unique([productId, storage, color])
+   *
+   * Therefore we can safely upsert using that compound key.
+   */
+
+  for (const variant of variants) {
+    await prisma.productVariant.upsert({
       where: {
-        slug: product.slug,
+        productId_storage_color: {
+          productId: createdProduct.id,
+          storage: variant.storage,
+          color: variant.color,
+        },
       },
-      update: product,
-      create: product,
-    });
-
-    await prisma.productVariant.deleteMany({
-      where: {
-        productId: createdProduct.id,
+      update: {
+        price: variant.price,
+        originalPrice: variant.originalPrice,
+        stock: variant.stock,
       },
-    });
-
-    await prisma.productImage.deleteMany({
-      where: {
+      create: {
         productId: createdProduct.id,
-      },
-    });
-
-    await prisma.productHighlight.deleteMany({
-      where: {
-        productId: createdProduct.id,
+        storage: variant.storage,
+        color: variant.color,
+        price: variant.price,
+        originalPrice: variant.originalPrice,
+        stock: variant.stock,
       },
     });
-
-    const createdVariants = await Promise.all(
-      variants.map((variant) =>
-        prisma.productVariant.create({
-          data: {
-            productId: createdProduct.id,
-            ...variant,
-          },
-        }),
-      ),
-    );
-
-    await prisma.productImage.createMany({
-      data: images.map((image) => ({
-        productId: createdProduct.id,
-        ...image,
-      })),
-    });
-
-    await prisma.productHighlight.createMany({
-      data: highlights.map((text, index) => ({
-        productId: createdProduct.id,
-        text,
-        position: index,
-      })),
-    });
-
-    console.log(
-      `✓ ${createdProduct.name} (${createdVariants.length} variants)`,
-    );
   }
 
-  console.log("✅ Product seeding completed.");
+  /*
+   * ---------------------------------------------------------
+   * PRODUCT IMAGES
+   * ---------------------------------------------------------
+   *
+   * Images are matched by product + position.
+   *
+   * Existing images are updated instead of deleted.
+   */
+
+  for (const image of images) {
+    const existingImage = await prisma.productImage.findFirst({
+      where: {
+        productId: createdProduct.id,
+        position: image.position,
+      },
+    });
+
+    if (existingImage) {
+      await prisma.productImage.update({
+        where: {
+          id: existingImage.id,
+        },
+        data: {
+          url: image.url,
+          altText: image.altText,
+        },
+      });
+    } else {
+      await prisma.productImage.create({
+        data: {
+          productId: createdProduct.id,
+          url: image.url,
+          altText: image.altText,
+          position: image.position,
+        },
+      });
+    }
+  }
+
+  /*
+   * ---------------------------------------------------------
+   * PRODUCT HIGHLIGHTS
+   * ---------------------------------------------------------
+   *
+   * Existing highlights are updated by position.
+   */
+
+  for (const [position, text] of highlights.entries()) {
+    const existingHighlight =
+      await prisma.productHighlight.findFirst({
+        where: {
+          productId: createdProduct.id,
+          position,
+        },
+      });
+
+    if (existingHighlight) {
+      await prisma.productHighlight.update({
+        where: {
+          id: existingHighlight.id,
+        },
+        data: {
+          text,
+        },
+      });
+    } else {
+      await prisma.productHighlight.create({
+        data: {
+          productId: createdProduct.id,
+          text,
+          position,
+        },
+      });
+    }
+  }
+
+  /*
+   * ---------------------------------------------------------
+   * LOGGING
+   * ---------------------------------------------------------
+   */
+
+  const variantCount = await prisma.productVariant.count({
+    where: {
+      productId: createdProduct.id,
+    },
+  });
+
+  const imageCount = await prisma.productImage.count({
+    where: {
+      productId: createdProduct.id,
+    },
+  });
+
+  const highlightCount = await prisma.productHighlight.count({
+    where: {
+      productId: createdProduct.id,
+    },
+  });
+
+  console.log(
+    `✓ ${createdProduct.name} | ` +
+      `${variantCount} variants | ` +
+      `${imageCount} images | ` +
+      `${highlightCount} highlights`,
+  );
+}
+
+async function main() {
+  console.log("🌱 Starting product seed...\n");
+
+  for (const productData of products) {
+    await seedProduct(productData);
+  }
+
+  console.log("\n✅ Product seeding completed successfully.");
 }
 
 main()
   .catch((error) => {
-    console.error("❌ Seed failed:", error);
-throw error;  })
+    console.error("\n❌ Product seed failed.");
+
+    console.error(error);
+  })
   .finally(async () => {
     await prisma.$disconnect();
   });
