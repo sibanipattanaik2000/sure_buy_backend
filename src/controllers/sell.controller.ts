@@ -1,9 +1,11 @@
-import type { Response } from "express";
+import type { Request, Response } from "express";
 import { z } from "zod";
 
 import type { AuthRequest } from "../middleware/auth.middleware";
-import { createSellRequest } from "../services/sell.service";
-
+import {
+  createSellRequest,
+  getSellCatalog,
+} from "../services/sell.service";
 const mediaSchema = z.object({
   url: z.string().url(),
   key: z.string().min(1),
@@ -36,7 +38,26 @@ const createSellRequestSchema = z.object({
     .optional()
     .default([]),
 });
+export async function getSellCatalogController(
+  _req: Request,
+  res: Response,
+) {
+  try {
+    const catalog = await getSellCatalog();
 
+    return res.status(200).json({
+      success: true,
+      data: catalog,
+    });
+  } catch (error) {
+    console.error("GET SELL CATALOG ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch sell catalogue",
+    });
+  }
+}
 export async function createSellRequestController(
   req: AuthRequest,
   res: Response,

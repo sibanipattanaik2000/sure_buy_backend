@@ -137,3 +137,63 @@ export async function createSellRequest(
 
   return sellRequest;
 }
+export async function getSellCatalog() {
+  const products = await prisma.product.findMany({
+    where: {
+      active: true,
+      category: {
+        equals: "Smartphones",
+        mode: "insensitive",
+      },
+    },
+    select: {
+      id: true,
+      name: true,
+      brand: true,
+    },
+    orderBy: [
+      {
+        brand: "asc",
+      },
+      {
+        name: "asc",
+      },
+    ],
+  });
+
+  const brandsMap = new Map<
+    string,
+    {
+      name: string;
+      models: {
+        id: number;
+        name: string;
+      }[];
+    }
+  >();
+
+  for (const product of products) {
+    if (!product.brand || !product.name) {
+      continue;
+    }
+
+    const brandName = product.brand.trim();
+
+    if (!brandsMap.has(brandName)) {
+      brandsMap.set(brandName, {
+        name: brandName,
+        models: [],
+      });
+    }
+
+    brandsMap.get(brandName)!.models.push({
+      id: product.id,
+      name: product.name,
+    });
+  }
+
+  return {
+    category: "Smartphones",
+    brands: Array.from(brandsMap.values()),
+  };
+}
