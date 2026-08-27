@@ -1,6 +1,7 @@
 
 import crypto from "crypto";
 import {
+  OrderStatus,
   PaymentMethod,
   PaymentStatus,
   Prisma,
@@ -156,6 +157,10 @@ export async function verifyRazorpayPayment(
     throw new Error("INVALID_PAYMENT_RESPONSE");
   }
 
+  /*
+   * 1. Make sure the order belongs to the
+   *    authenticated user.
+   */
   const order = await prisma.order.findFirst({
     where: {
       id: orderId,
@@ -173,6 +178,12 @@ export async function verifyRazorpayPayment(
     throw new Error("ORDER_NOT_FOUND");
   }
 
+  /*
+   * 2. Find the payment record created by OUR backend.
+   *
+   * We never trust a Razorpay order ID supplied by the
+   * frontend unless it already belongs to this order.
+   */
   const payment = await prisma.payment.findFirst({
     where: {
       orderId: order.id,
@@ -185,9 +196,15 @@ export async function verifyRazorpayPayment(
     throw new Error("PAYMENT_NOT_FOUND");
   }
 
+  /*
+   * 3. Idempotency.
+   *
+   * Razorpay/frontend retries must not create a second
+   * successful payment state.
+   */
   if (
     payment.providerPaymentId ===
-    razorpayPaymentId &&
+      razorpayPaymentId &&
     payment.status === PaymentStatus.PAID
   ) {
     return {
@@ -195,9 +212,18 @@ export async function verifyRazorpayPayment(
       alreadyProcessed: true,
       orderId: order.id,
       paymentId: payment.id,
+      razorpayPaymentId,
+      status: PaymentStatus.PAID,
     };
   }
 
+  /*
+   * 4. Verify Razorpay Checkout signature.
+   *
+   * IMPORTANT:
+   * This uses the Razorpay KEY SECRET on the server.
+   * The secret must NEVER be exposed to the frontend.
+   */
   const expectedSignature =
     crypto
       .createHmac(
@@ -210,16 +236,18 @@ export async function verifyRazorpayPayment(
       .digest("hex");
 
   const receivedBuffer =
-    Buffer.from(razorpaySignature);
+    Buffer.from(razorpaySignature, "utf8");
 
   const expectedBuffer =
-    Buffer.from(expectedSignature);
+    Buffer.from(expectedSignature, "utf8");
 
   if (
     receivedBuffer.length !==
     expectedBuffer.length
   ) {
-    throw new Error("INVALID_PAYMENT_SIGNATURE");
+    throw new Error(
+      "INVALID_PAYMENT_SIGNATURE",
+    );
   }
 
   if (
@@ -228,9 +256,90 @@ export async function verifyRazorpayPayment(
       expectedBuffer,
     )
   ) {
-    throw new Error("INVALID_PAYMENT_SIGNATURE");
+    throw new Error(
+      "INVALID_PAYMENT_SIGNATURE",
+    );
   }
 
+  /*
+   * 5. Confirm the payment with Razorpay itself.
+   *
+   * Signature verification proves that the response
+   * was generated using our Razorpay secret.
+   *
+   * Fetching the payment from Razorpay additionally
+   * lets us verify:
+   *   - payment belongs to our Razorpay order
+   *   - amount matches our order
+   *   - currency matches
+   *   - payment is actually captured
+   */
+  let razorpayPayment;
+
+  try {
+    razorpayPayment =
+      await razorpay.payments.fetch(
+        razorpayPaymentId,
+      );
+  } catch (error) {
+    console.error(
+      "RAZORPAY PAYMENT FETCH ERROR:",
+      error,
+    );
+
+    throw new Error(
+      "PAYMENT_VERIFICATION_FAILED",
+    );
+  }
+
+  if (
+    razorpayPayment.order_id !==
+    razorpayOrderId
+  ) {
+    throw new Error(
+      "PAYMENT_ORDER_MISMATCH",
+    );
+  }
+
+  const expectedAmountInPaise =
+    toPaise(
+      toNumber(order.totalAmount),
+    );
+
+  if (
+    razorpayPayment.amount !==
+    expectedAmountInPaise
+  ) {
+    throw new Error(
+      "PAYMENT_AMOUNT_MISMATCH",
+    );
+  }
+
+  if (
+    razorpayPayment.currency !==
+    order.currency
+  ) {
+    throw new Error(
+      "PAYMENT_CURRENCY_MISMATCH",
+    );
+  }
+
+  /*
+   * Razorpay payment must be captured before we
+   * consider the order successfully paid.
+   */
+  if (
+    razorpayPayment.status !==
+    "captured"
+  ) {
+    throw new Error(
+      "PAYMENT_NOT_CAPTURED",
+    );
+  }
+
+  /*
+   * 6. Atomically update our database.
+   */
   const updatedPayment =
     await prisma.$transaction(
       async (tx) => {
@@ -239,11 +348,16 @@ export async function verifyRazorpayPayment(
             where: {
               id: payment.id,
             },
+
             data: {
               providerPaymentId:
                 razorpayPaymentId,
-              signature: razorpaySignature,
-              status: PaymentStatus.PAID,
+
+              signature:
+                razorpaySignature,
+
+              status:
+                PaymentStatus.PAID,
             },
           });
 
@@ -251,9 +365,13 @@ export async function verifyRazorpayPayment(
           where: {
             id: order.id,
           },
+
           data: {
             paymentStatus:
               PaymentStatus.PAID,
+
+            status:
+              OrderStatus.CONFIRMED,
           },
         });
 
@@ -264,11 +382,17 @@ export async function verifyRazorpayPayment(
   return {
     success: true,
     alreadyProcessed: false,
+
     orderId: order.id,
-    paymentId: updatedPayment.id,
+
+    paymentId:
+      updatedPayment.id,
+
     razorpayPaymentId:
       updatedPayment.providerPaymentId,
-    status: updatedPayment.status,
+
+    status:
+      updatedPayment.status,
   };
 }
 

@@ -162,36 +162,69 @@ export async function verifyPayment(
       error,
     );
 
-    if (error instanceof Error) {
-      switch (error.message) {
-        case "ORDER_NOT_FOUND":
-          return res.status(404).json({
-            success: false,
-            message: "Order not found",
-          });
+if (error instanceof Error) {
+  switch (error.message) {
+    case "ORDER_NOT_FOUND":
+      return res.status(404).json({
+        success: false,
+        message: "Order not found",
+      });
 
-        case "PAYMENT_NOT_FOUND":
-          return res.status(404).json({
-            success: false,
-            message:
-              "Payment record not found",
-          });
+    case "PAYMENT_NOT_FOUND":
+      return res.status(404).json({
+        success: false,
+        message: "Payment record not found",
+      });
 
-        case "INVALID_PAYMENT_RESPONSE":
-          return res.status(400).json({
-            success: false,
-            message:
-              "Invalid payment response",
-          });
+    case "INVALID_PAYMENT_RESPONSE":
+      return res.status(400).json({
+        success: false,
+        message: "Invalid payment response",
+      });
 
-        case "INVALID_PAYMENT_SIGNATURE":
-          return res.status(400).json({
-            success: false,
-            message:
-              "Payment signature verification failed",
-          });
-      }
-    }
+    case "INVALID_PAYMENT_SIGNATURE":
+      return res.status(400).json({
+        success: false,
+        message:
+          "Payment signature verification failed",
+      });
+
+    case "PAYMENT_VERIFICATION_FAILED":
+      return res.status(502).json({
+        success: false,
+        message:
+          "Unable to confirm payment with Razorpay",
+      });
+
+    case "PAYMENT_ORDER_MISMATCH":
+      return res.status(400).json({
+        success: false,
+        message:
+          "Payment does not belong to this order",
+      });
+
+    case "PAYMENT_AMOUNT_MISMATCH":
+      return res.status(400).json({
+        success: false,
+        message:
+          "Payment amount does not match the order",
+      });
+
+    case "PAYMENT_CURRENCY_MISMATCH":
+      return res.status(400).json({
+        success: false,
+        message:
+          "Payment currency does not match the order",
+      });
+
+    case "PAYMENT_NOT_CAPTURED":
+      return res.status(409).json({
+        success: false,
+        message:
+          "Payment has not been captured yet",
+      });
+  }
+}
 
     return res.status(500).json({
       success: false,
