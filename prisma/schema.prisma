@@ -325,10 +325,10 @@ model Order {
   shippingCountry      String  @default("India")
   shippingLandmark     String?
 
-  items OrderItem[]
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  items     OrderItem[]
+  payments  Payment[]
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
 
   @@index([userId])
   @@index([status])
@@ -372,26 +372,57 @@ model OrderItem {
   @@index([variantId])
 }
 
+model Payment {
+  id String @id @default(cuid())
+
+  orderId String
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  provider String @default("RAZORPAY")
+
+  providerOrderId   String? @unique
+  providerPaymentId String? @unique
+
+  amount   Decimal @db.Decimal(10, 2)
+  currency String  @default("INR")
+
+  status PaymentStatus @default(PENDING)
+  method PaymentMethod
+
+  signature String?
+
+  failureCode    String?
+  failureMessage String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([orderId])
+  @@index([status])
+  @@index([provider])
+  @@index([createdAt])
+}
+
 model SellRequest {
   id String @id @default(cuid())
 
-  userId String
+  userId    String
   productId Int
 
-  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Restrict)
   product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
 
-  workingStatus String
-  screenCondition String
-  deviceCondition String
+  workingStatus    String
+  screenCondition  String
+  deviceCondition  String
   batteryCondition String
 
-  estimatedValue Decimal @db.Decimal(10, 2)
-  finalValue Decimal? @db.Decimal(10, 2)
+  estimatedValue Decimal  @db.Decimal(10, 2)
+  finalValue     Decimal? @db.Decimal(10, 2)
 
   pickupAddress String
-  pickupDate DateTime
-  pickupSlot String
+  pickupDate    DateTime
+  pickupSlot    String
 
   status SellRequestStatus @default(SUBMITTED)
 
@@ -413,11 +444,11 @@ model SellRequestMedia {
 
   sellRequest SellRequest @relation(fields: [sellRequestId], references: [id], onDelete: Cascade)
 
-  url String
-  key String
+  url      String
+  key      String
   mimeType String
-  size Int
-  position Int @default(0)
+  size     Int
+  position Int    @default(0)
 
   createdAt DateTime @default(now())
 
