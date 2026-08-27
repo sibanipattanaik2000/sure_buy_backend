@@ -3,7 +3,7 @@ import cors from "cors";
 import helmet from "helmet";
 import cookieParser from "cookie-parser";
 import rateLimit from "express-rate-limit";
-
+import wishlistRoutes from "./routes/wishlist.routes";
 import { env } from "./config/env";
 
 import authRoutes from "./routes/auth.routes";
@@ -90,6 +90,7 @@ app.use("/api/v1/addresses", addressRoutes);
 
 app.use("/api/v1/cart", cartRoutes);
 app.use("/api/v1/orders", orderRoutes);
+app.use("/api/v1/wishlist", wishlistRoutes);
 /**
  * 404 handler
  */
