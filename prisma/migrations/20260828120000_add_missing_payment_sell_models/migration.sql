@@ -1,4 +1,4 @@
-﻿/*
+/*
   Production reconciliation migration.
 
   Adds:
@@ -13,11 +13,6 @@
   - PaymentMethod adds EMI
 
   Existing application data is preserved.
-
-  IMPORTANT:
-  SellPayment was created by the previous migration.
-  The SellPayment -> SellRequest foreign key is added
-  only after SellRequest has been created.
 */
 
 -- =========================================================
@@ -32,11 +27,10 @@ BEGIN
         WHERE typname = 'UserRole'
     ) THEN
 
-        CREATE TYPE "UserRole_new" AS ENUM (
-            'CUSTOMER',
-            'ADMIN'
-        );
+        -- Create the replacement enum.
+        CREATE TYPE "UserRole_new" AS ENUM ('CUSTOMER', 'ADMIN');
 
+        -- Change the column using text conversion.
         ALTER TABLE "User"
         ALTER COLUMN "role"
         DROP DEFAULT;
@@ -52,11 +46,14 @@ BEGIN
             END
         )::"UserRole_new";
 
+        -- Remove old enum.
         DROP TYPE "UserRole";
 
+        -- Rename replacement enum.
         ALTER TYPE "UserRole_new"
         RENAME TO "UserRole";
 
+        -- Restore Prisma default.
         ALTER TABLE "User"
         ALTER COLUMN "role"
         SET DEFAULT 'CUSTOMER'::"UserRole";
@@ -83,10 +80,8 @@ BEGIN
         WHERE enumtypid = '"PaymentMethod"'::regtype
         AND enumlabel = 'EMI'
     ) THEN
-
         ALTER TYPE "PaymentMethod"
         ADD VALUE 'EMI';
-
     END IF;
 END
 $$;
@@ -103,7 +98,6 @@ BEGIN
         FROM pg_type
         WHERE typname = 'SellRequestStatus'
     ) THEN
-
         CREATE TYPE "SellRequestStatus" AS ENUM (
             'DRAFT',
             'SUBMITTED',
@@ -118,7 +112,6 @@ BEGIN
             'CANCELLED',
             'REJECTED'
         );
-
     END IF;
 END
 $$;
@@ -164,14 +157,12 @@ BEGIN
         FROM pg_constraint
         WHERE conname = 'RefreshToken_userId_fkey'
     ) THEN
-
         ALTER TABLE "RefreshToken"
         ADD CONSTRAINT "RefreshToken_userId_fkey"
         FOREIGN KEY ("userId")
         REFERENCES "User"("id")
         ON DELETE CASCADE
         ON UPDATE CASCADE;
-
     END IF;
 END
 $$;
@@ -239,14 +230,12 @@ BEGIN
         FROM pg_constraint
         WHERE conname = 'Payment_orderId_fkey'
     ) THEN
-
         ALTER TABLE "Payment"
         ADD CONSTRAINT "Payment_orderId_fkey"
         FOREIGN KEY ("orderId")
         REFERENCES "Order"("id")
         ON DELETE RESTRICT
         ON UPDATE CASCADE;
-
     END IF;
 END
 $$;
@@ -301,38 +290,31 @@ ON "SellRequest"("createdAt");
 
 DO $$
 BEGIN
-
     IF NOT EXISTS (
         SELECT 1
         FROM pg_constraint
         WHERE conname = 'SellRequest_userId_fkey'
     ) THEN
-
         ALTER TABLE "SellRequest"
         ADD CONSTRAINT "SellRequest_userId_fkey"
         FOREIGN KEY ("userId")
         REFERENCES "User"("id")
         ON DELETE RESTRICT
         ON UPDATE CASCADE;
-
     END IF;
-
 
     IF NOT EXISTS (
         SELECT 1
         FROM pg_constraint
         WHERE conname = 'SellRequest_productId_fkey'
     ) THEN
-
         ALTER TABLE "SellRequest"
         ADD CONSTRAINT "SellRequest_productId_fkey"
         FOREIGN KEY ("productId")
         REFERENCES "Product"("id")
         ON DELETE RESTRICT
         ON UPDATE CASCADE;
-
     END IF;
-
 END
 $$;
 
@@ -366,25 +348,19 @@ CREATE INDEX IF NOT EXISTS
 "SellRequestMedia_sellRequestId_position_idx"
 ON "SellRequestMedia"("sellRequestId", "position");
 
-
 DO $$
 BEGIN
-
     IF NOT EXISTS (
         SELECT 1
         FROM pg_constraint
         WHERE conname = 'SellRequestMedia_sellRequestId_fkey'
     ) THEN
-
         ALTER TABLE "SellRequestMedia"
         ADD CONSTRAINT "SellRequestMedia_sellRequestId_fkey"
         FOREIGN KEY ("sellRequestId")
         REFERENCES "SellRequest"("id")
         ON DELETE CASCADE
         ON UPDATE CASCADE;
-
     END IF;
-
 END
 $$;
-

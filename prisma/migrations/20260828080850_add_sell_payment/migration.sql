@@ -1,5 +1,5 @@
 ﻿-- DropIndex
-DROP INDEX IF EXISTS "User_role_idx";
+DROP INDEX "User_role_idx";
 
 -- CreateTable
 CREATE TABLE "SellPayment" (
@@ -22,24 +22,21 @@ CREATE TABLE "SellPayment" (
 );
 
 -- CreateIndex
-CREATE UNIQUE INDEX "SellPayment_providerOrderId_key"
-ON "SellPayment"("providerOrderId");
+CREATE UNIQUE INDEX "SellPayment_providerOrderId_key" ON "SellPayment"("providerOrderId");
 
-CREATE UNIQUE INDEX "SellPayment_providerPaymentId_key"
-ON "SellPayment"("providerPaymentId");
+-- CreateIndex
+CREATE UNIQUE INDEX "SellPayment_providerPaymentId_key" ON "SellPayment"("providerPaymentId");
 
-CREATE INDEX "SellPayment_sellRequestId_idx"
-ON "SellPayment"("sellRequestId");
+-- CreateIndex
+CREATE INDEX "SellPayment_sellRequestId_idx" ON "SellPayment"("sellRequestId");
 
-CREATE INDEX "SellPayment_status_idx"
-ON "SellPayment"("status");
+-- CreateIndex
+CREATE INDEX "SellPayment_status_idx" ON "SellPayment"("status");
 
-CREATE INDEX "SellPayment_provider_idx"
-ON "SellPayment"("provider");
+-- CreateIndex
+CREATE INDEX "SellPayment_provider_idx" ON "SellPayment"("provider");
 
-CREATE INDEX "SellPayment_createdAt_idx"
-ON "SellPayment"("createdAt");
+-- CreateIndex
+CREATE INDEX "SellPayment_createdAt_idx" ON "SellPayment"("createdAt");
 
--- IMPORTANT:
--- SellRequest is created by a later migration.
--- Therefore the foreign key is intentionally NOT created here.
+
