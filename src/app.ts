@@ -14,7 +14,7 @@ import orderRoutes from "./routes/order.routes";
 import sellRoutes from "./routes/sell.routes";
 import paymentRoutes from "./routes/payment.routes";
 import { notFoundHandler, errorHandler } from "./middleware/error.middleware";
-
+import sellPaymentRoutes from "./routes/sell-payment.routes";
 const app = express();
 
 /**
@@ -103,6 +103,7 @@ app.use("/api/v1/orders", orderRoutes);
 app.use("/api/v1/wishlist", wishlistRoutes);
 app.use("/api/v1/sell", sellRoutes);
 app.use("/api/v1/payments", paymentRoutes);
+app.use("/api/v1/sell/payments", sellPaymentRoutes);
 /**
  * 404 handler
  */
