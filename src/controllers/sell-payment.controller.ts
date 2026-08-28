@@ -18,12 +18,6 @@ const verifyPaymentSchema = z.object({
   razorpaySignature: z.string().min(1),
 });
 
-/**
- * POST /api/v1/sell/payments/:sellRequestId
- *
- * Creates or reuses the Razorpay order for the ₹500
- * sell pickup booking fee.
- */
 export async function createSellPaymentOrderController(
   req: AuthRequest,
   res: Response,
@@ -67,7 +61,10 @@ export async function createSellPaymentOrderController(
       data: result,
     });
   } catch (error) {
-    console.error("CREATE SELL PAYMENT ORDER ERROR:", error);
+    console.error(
+      "CREATE SELL PAYMENT ORDER ERROR:",
+      error,
+    );
 
     if (!(error instanceof Error)) {
       return res.status(500).json({
@@ -86,29 +83,43 @@ export async function createSellPaymentOrderController(
       case "SELL_REQUEST_NOT_PAYABLE":
         return res.status(409).json({
           success: false,
-          message: "This sell request is not eligible for payment",
+          message:
+            "This sell request is not eligible for payment",
         });
 
       case "SELL_PAYMENT_ALREADY_PAID":
         return res.status(409).json({
           success: false,
-          message: "This sell request has already been paid",
+          message:
+            "This sell request has already been paid",
+        });
+
+      case "SELL_PAYMENT_BELOW_MINIMUM":
+        return res.status(400).json({
+          success: false,
+          message:
+            "Sell payment amount must be at least ₹500.",
+          code: "SELL_PAYMENT_BELOW_MINIMUM",
+        });
+
+      case "INVALID_PAYMENT_AMOUNT":
+        return res.status(400).json({
+          success: false,
+          message:
+            "Invalid sell payment amount.",
+          code: "INVALID_PAYMENT_AMOUNT",
         });
 
       default:
         return res.status(500).json({
           success: false,
-          message: "Unable to create sell payment",
+          message:
+            "Unable to create sell payment",
         });
     }
   }
 }
 
-/**
- * POST /api/v1/sell/payments/:sellRequestId/verify
- *
- * Verifies Razorpay Checkout payment on the server.
- */
 export async function verifySellPaymentController(
   req: AuthRequest,
   res: Response,
@@ -135,8 +146,10 @@ export async function verifySellPaymentController(
     if (!parsed.success) {
       return res.status(400).json({
         success: false,
-        message: "Invalid Razorpay payment response",
-        errors: parsed.error.flatten().fieldErrors,
+        message:
+          "Invalid Razorpay payment response",
+        errors:
+          parsed.error.flatten().fieldErrors,
       });
     }
 
@@ -156,7 +169,10 @@ export async function verifySellPaymentController(
       data: result,
     });
   } catch (error) {
-    console.error("VERIFY SELL PAYMENT ERROR:", error);
+    console.error(
+      "VERIFY SELL PAYMENT ERROR:",
+      error,
+    );
 
     if (!(error instanceof Error)) {
       return res.status(500).json({
@@ -180,7 +196,10 @@ export async function verifySellPaymentController(
     if (clientErrors.has(error.message)) {
       return res.status(400).json({
         success: false,
-        message: getSellPaymentErrorMessage(error.message),
+        message:
+          getSellPaymentErrorMessage(
+            error.message,
+          ),
         code: error.message,
       });
     }
@@ -192,11 +211,6 @@ export async function verifySellPaymentController(
   }
 }
 
-/**
- * GET /api/v1/sell/payments/:sellRequestId/status
- *
- * Returns the current sell request/payment state.
- */
 export async function getSellPaymentStatusController(
   req: AuthRequest,
   res: Response,
@@ -218,16 +232,26 @@ export async function getSellPaymentStatusController(
       });
     }
 
-    const result = await getSellPaymentStatus(req.userId, sellRequestId);
+    const result = await getSellPaymentStatus(
+      req.userId,
+      sellRequestId,
+    );
 
     return res.status(200).json({
       success: true,
       data: result,
     });
   } catch (error) {
-    console.error("GET SELL PAYMENT STATUS ERROR:", error);
+    console.error(
+      "GET SELL PAYMENT STATUS ERROR:",
+      error,
+    );
 
-    if (error instanceof Error && error.message === "SELL_REQUEST_NOT_FOUND") {
+    if (
+      error instanceof Error &&
+      error.message ===
+        "SELL_REQUEST_NOT_FOUND"
+    ) {
       return res.status(404).json({
         success: false,
         message: "Sell request not found",
@@ -236,12 +260,15 @@ export async function getSellPaymentStatusController(
 
     return res.status(500).json({
       success: false,
-      message: "Unable to fetch sell payment status",
+      message:
+        "Unable to fetch sell payment status",
     });
   }
 }
 
-function getSellPaymentErrorMessage(code: string): string {
+function getSellPaymentErrorMessage(
+  code: string,
+): string {
   switch (code) {
     case "INVALID_PAYMENT_RESPONSE":
       return "Invalid payment response received.";

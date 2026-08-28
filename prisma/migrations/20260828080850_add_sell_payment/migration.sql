@@ -1,5 +1,5 @@
--- DropIndex
-DROP INDEX "User_role_idx";
+﻿-- DropIndex
+DROP INDEX IF EXISTS "User_role_idx";
 
 -- CreateTable
 CREATE TABLE "SellPayment" (
@@ -22,22 +22,24 @@ CREATE TABLE "SellPayment" (
 );
 
 -- CreateIndex
-CREATE UNIQUE INDEX "SellPayment_providerOrderId_key" ON "SellPayment"("providerOrderId");
+CREATE UNIQUE INDEX "SellPayment_providerOrderId_key"
+ON "SellPayment"("providerOrderId");
 
--- CreateIndex
-CREATE UNIQUE INDEX "SellPayment_providerPaymentId_key" ON "SellPayment"("providerPaymentId");
+CREATE UNIQUE INDEX "SellPayment_providerPaymentId_key"
+ON "SellPayment"("providerPaymentId");
 
--- CreateIndex
-CREATE INDEX "SellPayment_sellRequestId_idx" ON "SellPayment"("sellRequestId");
+CREATE INDEX "SellPayment_sellRequestId_idx"
+ON "SellPayment"("sellRequestId");
 
--- CreateIndex
-CREATE INDEX "SellPayment_status_idx" ON "SellPayment"("status");
+CREATE INDEX "SellPayment_status_idx"
+ON "SellPayment"("status");
 
--- CreateIndex
-CREATE INDEX "SellPayment_provider_idx" ON "SellPayment"("provider");
+CREATE INDEX "SellPayment_provider_idx"
+ON "SellPayment"("provider");
 
--- CreateIndex
-CREATE INDEX "SellPayment_createdAt_idx" ON "SellPayment"("createdAt");
+CREATE INDEX "SellPayment_createdAt_idx"
+ON "SellPayment"("createdAt");
 
--- AddForeignKey
-ALTER TABLE "SellPayment" ADD CONSTRAINT "SellPayment_sellRequestId_fkey" FOREIGN KEY ("sellRequestId") REFERENCES "SellRequest"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+-- IMPORTANT:
+-- SellRequest is created by a later migration.
+-- Therefore the foreign key is intentionally NOT created here.

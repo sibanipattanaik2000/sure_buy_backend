@@ -11,7 +11,7 @@ import { prisma } from "../config/prisma";
 import { razorpay } from "../config/razorpay";
 import { env } from "../config/env";
 
-const SELL_PICKUP_FEE = 500;
+const MIN_SELL_PAYMENT_AMOUNT = 500;
 const SELL_CURRENCY = "INR";
 
 function toPaise(amount: number): number {
@@ -28,6 +28,12 @@ function toNumber(value: Prisma.Decimal | number): number {
 
 /**
  * Create or reuse the Razorpay order for a sell request.
+ *
+ * Business rule:
+ * - Minimum sell payment: ₹500
+ * - No maximum amount
+ * - Amount is determined by the sell request value
+ * - Backend is the source of truth
  */
 export async function createSellPaymentOrder(
   userId: string,
@@ -43,6 +49,9 @@ export async function createSellPaymentOrder(
       id: true,
       userId: true,
       status: true,
+      estimatedValue: true,
+      finalValue: true,
+
       sellPayments: {
         orderBy: {
           createdAt: "desc",
@@ -71,40 +80,70 @@ export async function createSellPaymentOrder(
     throw new Error("SELL_REQUEST_NOT_PAYABLE");
   }
 
+  /**
+   * Once the phone has a final evaluated value,
+   * use that value. Otherwise use the initial estimate.
+   */
+  const requestedAmount =
+    sellRequest.finalValue !== null
+      ? toNumber(sellRequest.finalValue)
+      : toNumber(sellRequest.estimatedValue);
+
+  /**
+   * Minimum ₹500.
+   *
+   * There is intentionally NO maximum check.
+   */
+  if (
+    !Number.isFinite(requestedAmount) ||
+    requestedAmount < MIN_SELL_PAYMENT_AMOUNT
+  ) {
+    throw new Error("SELL_PAYMENT_BELOW_MINIMUM");
+  }
+
+  const amount = Math.round(requestedAmount);
+
   const latestPayment = sellRequest.sellPayments[0];
 
   /**
-   * If this sell request was already successfully paid,
-   * don't create another payment.
+   * Do not create another payment after successful payment.
    */
   if (latestPayment?.status === PaymentStatus.PAID) {
     throw new Error("SELL_PAYMENT_ALREADY_PAID");
   }
 
   /**
-   * Reuse an existing pending/authorized Razorpay order.
+   * Reuse a pending/authorized payment only when
+   * the stored amount still matches the current sell value.
+   *
+   * This prevents reusing an old Razorpay order after
+   * the phone valuation has changed.
    */
   if (
     latestPayment?.providerOrderId &&
     (
       latestPayment.status === PaymentStatus.PENDING ||
       latestPayment.status === PaymentStatus.AUTHORIZED
-    )
+    ) &&
+    toNumber(latestPayment.amount) === amount &&
+    latestPayment.currency === SELL_CURRENCY
   ) {
     return {
       sellRequestId: sellRequest.id,
       sellPaymentId: latestPayment.id,
       razorpayOrderId: latestPayment.providerOrderId,
-      amount: toNumber(latestPayment.amount),
-      amountInPaise: toPaise(toNumber(latestPayment.amount)),
-      currency: latestPayment.currency,
+      amount,
+      amountInPaise: toPaise(amount),
+      currency: SELL_CURRENCY,
       keyId: env.RAZORPAY_KEY_ID,
       method: latestPayment.method,
     };
   }
 
-  const amount = SELL_PICKUP_FEE;
-
+  /**
+   * Create a new Razorpay order using the actual
+   * sell value.
+   */
   const razorpayOrder = await razorpay.orders.create({
     amount: toPaise(amount),
     currency: SELL_CURRENCY,
@@ -112,7 +151,8 @@ export async function createSellPaymentOrder(
     notes: {
       sellRequestId: sellRequest.id,
       userId,
-      purpose: "SELL_PICKUP_FEE",
+      purpose: "SELL_PAYMENT",
+      sellAmount: String(amount),
     },
   });
 
@@ -147,7 +187,7 @@ export async function createSellPaymentOrder(
 }
 
 /**
- * Verify a Razorpay sell-payment checkout response.
+ * Verify a Razorpay sell payment.
  */
 export async function verifySellPayment(
   userId: string,
@@ -221,7 +261,7 @@ export async function verifySellPayment(
   }
 
   /**
-   * Verify Razorpay Checkout signature.
+   * Verify Razorpay signature.
    */
   const expectedSignature = crypto
     .createHmac(
@@ -258,8 +298,7 @@ export async function verifySellPayment(
   }
 
   /**
-   * Never trust the browser's payment status.
-   * Ask Razorpay for the actual payment.
+   * Verify payment directly with Razorpay.
    */
   let razorpayPayment;
 
@@ -301,7 +340,7 @@ export async function verifySellPayment(
   }
 
   /**
-   * Payment must actually be captured.
+   * Payment must be captured.
    */
   if (razorpayPayment.status !== "captured") {
     if (
@@ -404,9 +443,7 @@ export async function verifySellPayment(
 }
 
 /**
- * Get the current sell payment state.
- *
- * Used by the success page after redirect.
+ * Get current sell payment state.
  */
 export async function getSellPaymentStatus(
   userId: string,
