@@ -1,9 +1,9 @@
 
 import crypto from "crypto";
 import {
-  OrderStatus,
   PaymentMethod,
   PaymentStatus,
+  OrderStatus,
   Prisma,
 } from "@prisma/client";
 
@@ -27,6 +27,9 @@ function toNumber(value: Prisma.Decimal | number): number {
  * Create or reuse a Razorpay order for an existing
  * SureBuy order.
  */
+
+
+
 export async function createRazorpayOrder(
   userId: string,
   orderId: string,
@@ -142,6 +145,7 @@ export async function createRazorpayOrder(
  * The order ID used for verification must be the
  * Razorpay order ID that OUR SERVER created.
  */
+
 export async function verifyRazorpayPayment(
   userId: string,
   orderId: string,
@@ -158,9 +162,11 @@ export async function verifyRazorpayPayment(
   }
 
   /*
-   * 1. Make sure the order belongs to the
-   *    authenticated user.
+   * =========================================================
+   * 1. Find OUR order
+   * =========================================================
    */
+
   const order = await prisma.order.findFirst({
     where: {
       id: orderId,
@@ -168,6 +174,7 @@ export async function verifyRazorpayPayment(
     },
     select: {
       id: true,
+      orderNumber: true,
       totalAmount: true,
       currency: true,
       paymentStatus: true,
@@ -179,11 +186,11 @@ export async function verifyRazorpayPayment(
   }
 
   /*
-   * 2. Find the payment record created by OUR backend.
-   *
-   * We never trust a Razorpay order ID supplied by the
-   * frontend unless it already belongs to this order.
+   * =========================================================
+   * 2. Find OUR Razorpay payment record
+   * =========================================================
    */
+
   const payment = await prisma.payment.findFirst({
     where: {
       orderId: order.id,
@@ -197,11 +204,58 @@ export async function verifyRazorpayPayment(
   }
 
   /*
-   * 3. Idempotency.
-   *
-   * Razorpay/frontend retries must not create a second
-   * successful payment state.
+   * =========================================================
+   * 3. Make sure the payment belongs to this order
+   * =========================================================
    */
+
+  if (payment.orderId !== order.id) {
+    throw new Error("PAYMENT_ORDER_MISMATCH");
+  }
+
+  /*
+   * =========================================================
+   * 4. Validate amount
+   * =========================================================
+   */
+
+  const expectedAmountInPaise = toPaise(
+    toNumber(order.totalAmount),
+  );
+
+  const paymentAmountInPaise = toPaise(
+    toNumber(payment.amount),
+  );
+
+  if (
+    expectedAmountInPaise !==
+    paymentAmountInPaise
+  ) {
+    throw new Error("PAYMENT_AMOUNT_MISMATCH");
+  }
+
+  /*
+   * =========================================================
+   * 5. Validate currency
+   * =========================================================
+   */
+
+  if (
+    payment.currency !== order.currency
+  ) {
+    throw new Error("PAYMENT_CURRENCY_MISMATCH");
+  }
+
+  /*
+   * =========================================================
+   * 6. Idempotency
+   * =========================================================
+   *
+   * If the same successful payment is submitted twice,
+   * return the already processed result instead of
+   * creating another state transition.
+   */
+
   if (
     payment.providerPaymentId ===
       razorpayPaymentId &&
@@ -211,6 +265,7 @@ export async function verifyRazorpayPayment(
       success: true,
       alreadyProcessed: true,
       orderId: order.id,
+      orderNumber: order.orderNumber,
       paymentId: payment.id,
       razorpayPaymentId,
       status: PaymentStatus.PAID,
@@ -218,12 +273,18 @@ export async function verifyRazorpayPayment(
   }
 
   /*
-   * 4. Verify Razorpay Checkout signature.
+   * =========================================================
+   * 7. Verify Razorpay Checkout signature
+   * =========================================================
    *
    * IMPORTANT:
-   * This uses the Razorpay KEY SECRET on the server.
-   * The secret must NEVER be exposed to the frontend.
+   *
+   * The order ID used here is the Razorpay order ID that
+   * OUR DATABASE created.
+   *
+   * Razorpay recommends server-side signature verification.
    */
+
   const expectedSignature =
     crypto
       .createHmac(
@@ -231,15 +292,15 @@ export async function verifyRazorpayPayment(
         env.RAZORPAY_KEY_SECRET,
       )
       .update(
-        `${razorpayOrderId}|${razorpayPaymentId}`,
+        `${payment.providerOrderId}|${razorpayPaymentId}`,
       )
       .digest("hex");
 
   const receivedBuffer =
-    Buffer.from(razorpaySignature, "utf8");
+    Buffer.from(razorpaySignature);
 
   const expectedBuffer =
-    Buffer.from(expectedSignature, "utf8");
+    Buffer.from(expectedSignature);
 
   if (
     receivedBuffer.length !==
@@ -262,18 +323,14 @@ export async function verifyRazorpayPayment(
   }
 
   /*
-   * 5. Confirm the payment with Razorpay itself.
+   * =========================================================
+   * 8. Ask Razorpay for the REAL payment status
+   * =========================================================
    *
-   * Signature verification proves that the response
-   * was generated using our Razorpay secret.
-   *
-   * Fetching the payment from Razorpay additionally
-   * lets us verify:
-   *   - payment belongs to our Razorpay order
-   *   - amount matches our order
-   *   - currency matches
-   *   - payment is actually captured
+   * Never trust the browser to tell us that payment was
+   * captured.
    */
+
   let razorpayPayment;
 
   try {
@@ -292,19 +349,26 @@ export async function verifyRazorpayPayment(
     );
   }
 
+  /*
+   * =========================================================
+   * 9. Verify provider order ID
+   * =========================================================
+   */
+
   if (
     razorpayPayment.order_id !==
-    razorpayOrderId
+    payment.providerOrderId
   ) {
     throw new Error(
       "PAYMENT_ORDER_MISMATCH",
     );
   }
 
-  const expectedAmountInPaise =
-    toPaise(
-      toNumber(order.totalAmount),
-    );
+  /*
+   * =========================================================
+   * 10. Verify provider amount
+   * =========================================================
+   */
 
   if (
     razorpayPayment.amount !==
@@ -314,6 +378,12 @@ export async function verifyRazorpayPayment(
       "PAYMENT_AMOUNT_MISMATCH",
     );
   }
+
+  /*
+   * =========================================================
+   * 11. Verify provider currency
+   * =========================================================
+   */
 
   if (
     razorpayPayment.currency !==
@@ -325,30 +395,73 @@ export async function verifyRazorpayPayment(
   }
 
   /*
-   * Razorpay payment must be captured before we
-   * consider the order successfully paid.
+   * =========================================================
+   * 12. Payment MUST be captured
+   * =========================================================
+   *
+   * Authorized != money successfully captured.
+   *
+   * Your Razorpay account should use automatic capture,
+   * or the backend must explicitly capture authorized
+   * payments.
    */
+
   if (
     razorpayPayment.status !==
     "captured"
   ) {
+    if (
+      razorpayPayment.status ===
+      "authorized"
+    ) {
+      throw new Error(
+        "PAYMENT_NOT_CAPTURED",
+      );
+    }
+
     throw new Error(
-      "PAYMENT_NOT_CAPTURED",
+      "PAYMENT_VERIFICATION_FAILED",
     );
   }
 
   /*
-   * 6. Atomically update our database.
+   * =========================================================
+   * 13. Persist the verified payment atomically
+   * =========================================================
    */
+
   const updatedPayment =
     await prisma.$transaction(
       async (tx) => {
+        const currentPayment =
+          await tx.payment.findUnique({
+            where: {
+              id: payment.id,
+            },
+          });
+
+        if (!currentPayment) {
+          throw new Error(
+            "PAYMENT_NOT_FOUND",
+          );
+        }
+
+        /*
+         * Another request/webhook may have already
+         * completed this payment.
+         */
+        if (
+          currentPayment.status ===
+          PaymentStatus.PAID
+        ) {
+          return currentPayment;
+        }
+
         const updated =
           await tx.payment.update({
             where: {
               id: payment.id,
             },
-
             data: {
               providerPaymentId:
                 razorpayPaymentId,
@@ -365,7 +478,6 @@ export async function verifyRazorpayPayment(
           where: {
             id: order.id,
           },
-
           data: {
             paymentStatus:
               PaymentStatus.PAID,
@@ -381,9 +493,14 @@ export async function verifyRazorpayPayment(
 
   return {
     success: true,
-    alreadyProcessed: false,
+    alreadyProcessed:
+      updatedPayment.status ===
+      PaymentStatus.PAID &&
+      payment.status ===
+      PaymentStatus.PAID,
 
     orderId: order.id,
+    orderNumber: order.orderNumber,
 
     paymentId:
       updatedPayment.id,
@@ -395,4 +512,5 @@ export async function verifyRazorpayPayment(
       updatedPayment.status,
   };
 }
+
 

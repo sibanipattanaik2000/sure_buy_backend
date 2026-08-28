@@ -67,6 +67,37 @@ enum SellRequestStatus {
   REJECTED
 }
 
+model SellPayment {
+  id String @id @default(cuid())
+
+  sellRequestId String
+  sellRequest   SellRequest @relation(fields: [sellRequestId], references: [id], onDelete: Restrict)
+
+  provider String @default("RAZORPAY")
+
+  providerOrderId   String? @unique
+  providerPaymentId String? @unique
+
+  amount   Decimal @db.Decimal(10, 2)
+  currency String  @default("INR")
+
+  status PaymentStatus @default(PENDING)
+  method PaymentMethod
+
+  signature String?
+
+  failureCode    String?
+  failureMessage String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([sellRequestId])
+  @@index([status])
+  @@index([provider])
+  @@index([createdAt])
+}
+
 model User {
   id           String   @id @default(cuid())
   firstName    String
@@ -403,6 +434,25 @@ model Payment {
   @@index([createdAt])
 }
 
+model SellRequestMedia {
+  id String @id @default(cuid())
+
+  sellRequestId String
+
+  sellRequest SellRequest @relation(fields: [sellRequestId], references: [id], onDelete: Cascade)
+
+  url      String
+  key      String
+  mimeType String
+  size     Int
+  position Int    @default(0)
+
+  createdAt DateTime @default(now())
+
+  @@unique([sellRequestId, key])
+  @@index([sellRequestId, position])
+}
+
 model SellRequest {
   id String @id @default(cuid())
 
@@ -426,7 +476,8 @@ model SellRequest {
 
   status SellRequestStatus @default(SUBMITTED)
 
-  media SellRequestMedia[]
+  media        SellRequestMedia[]
+  sellPayments SellPayment[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -435,23 +486,4 @@ model SellRequest {
   @@index([productId])
   @@index([status])
   @@index([createdAt])
-}
-
-model SellRequestMedia {
-  id String @id @default(cuid())
-
-  sellRequestId String
-
-  sellRequest SellRequest @relation(fields: [sellRequestId], references: [id], onDelete: Cascade)
-
-  url      String
-  key      String
-  mimeType String
-  size     Int
-  position Int    @default(0)
-
-  createdAt DateTime @default(now())
-
-  @@unique([sellRequestId, key])
-  @@index([sellRequestId, position])
 }
