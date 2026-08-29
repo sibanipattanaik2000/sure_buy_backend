@@ -19,7 +19,13 @@ function toPaise(amount: number): number {
     throw new Error("INVALID_PAYMENT_AMOUNT");
   }
 
-  return Math.round(amount * 100);
+  const paise = Math.round(amount * 100);
+
+  if (!Number.isSafeInteger(paise)) {
+    throw new Error("INVALID_PAYMENT_AMOUNT");
+  }
+
+  return paise;
 }
 
 function toNumber(value: Prisma.Decimal | number): number {
@@ -101,7 +107,8 @@ export async function createSellPaymentOrder(
     throw new Error("SELL_PAYMENT_BELOW_MINIMUM");
   }
 
-  const amount = Math.round(requestedAmount);
+  const amount = requestedAmount;
+  const amountInPaise = toPaise(amount);
 
   const latestPayment = sellRequest.sellPayments[0];
 
@@ -121,10 +128,8 @@ export async function createSellPaymentOrder(
    */
   if (
     latestPayment?.providerOrderId &&
-    (
-      latestPayment.status === PaymentStatus.PENDING ||
-      latestPayment.status === PaymentStatus.AUTHORIZED
-    ) &&
+    (latestPayment.status === PaymentStatus.PENDING ||
+      latestPayment.status === PaymentStatus.AUTHORIZED) &&
     toNumber(latestPayment.amount) === amount &&
     latestPayment.currency === SELL_CURRENCY
   ) {
@@ -133,7 +138,7 @@ export async function createSellPaymentOrder(
       sellPaymentId: latestPayment.id,
       razorpayOrderId: latestPayment.providerOrderId,
       amount,
-      amountInPaise: toPaise(amount),
+      amountInPaise,
       currency: SELL_CURRENCY,
       keyId: env.RAZORPAY_KEY_ID,
       method: latestPayment.method,
@@ -145,7 +150,7 @@ export async function createSellPaymentOrder(
    * sell value.
    */
   const razorpayOrder = await razorpay.orders.create({
-    amount: toPaise(amount),
+    amount: amountInPaise,
     currency: SELL_CURRENCY,
     receipt: `SELL-${sellRequest.id}`,
     notes: {
@@ -196,11 +201,7 @@ export async function verifySellPayment(
   razorpayOrderId: string,
   razorpaySignature: string,
 ) {
-  if (
-    !razorpayPaymentId ||
-    !razorpayOrderId ||
-    !razorpaySignature
-  ) {
+  if (!razorpayPaymentId || !razorpayOrderId || !razorpaySignature) {
     throw new Error("INVALID_PAYMENT_RESPONSE");
   }
 
@@ -235,9 +236,7 @@ export async function verifySellPayment(
     throw new Error("PAYMENT_REQUEST_MISMATCH");
   }
 
-  const expectedAmountInPaise = toPaise(
-    toNumber(sellPayment.amount),
-  );
+  const expectedAmountInPaise = toPaise(toNumber(sellPayment.amount));
 
   if (sellPayment.currency !== SELL_CURRENCY) {
     throw new Error("PAYMENT_CURRENCY_MISMATCH");
@@ -264,36 +263,19 @@ export async function verifySellPayment(
    * Verify Razorpay signature.
    */
   const expectedSignature = crypto
-    .createHmac(
-      "sha256",
-      env.RAZORPAY_KEY_SECRET,
-    )
-    .update(
-      `${sellPayment.providerOrderId}|${razorpayPaymentId}`,
-    )
+    .createHmac("sha256", env.RAZORPAY_KEY_SECRET)
+    .update(`${sellPayment.providerOrderId}|${razorpayPaymentId}`)
     .digest("hex");
 
-  const receivedBuffer = Buffer.from(
-    razorpaySignature,
-  );
+  const receivedBuffer = Buffer.from(razorpaySignature);
 
-  const expectedBuffer = Buffer.from(
-    expectedSignature,
-  );
+  const expectedBuffer = Buffer.from(expectedSignature);
 
-  if (
-    receivedBuffer.length !==
-    expectedBuffer.length
-  ) {
+  if (receivedBuffer.length !== expectedBuffer.length) {
     throw new Error("INVALID_PAYMENT_SIGNATURE");
   }
 
-  if (
-    !crypto.timingSafeEqual(
-      receivedBuffer,
-      expectedBuffer,
-    )
-  ) {
+  if (!crypto.timingSafeEqual(receivedBuffer, expectedBuffer)) {
     throw new Error("INVALID_PAYMENT_SIGNATURE");
   }
 
@@ -303,39 +285,22 @@ export async function verifySellPayment(
   let razorpayPayment;
 
   try {
-    razorpayPayment =
-      await razorpay.payments.fetch(
-        razorpayPaymentId,
-      );
+    razorpayPayment = await razorpay.payments.fetch(razorpayPaymentId);
   } catch (error) {
-    console.error(
-      "SELL RAZORPAY PAYMENT FETCH ERROR:",
-      error,
-    );
+    console.error("SELL RAZORPAY PAYMENT FETCH ERROR:", error);
 
-    throw new Error(
-      "PAYMENT_VERIFICATION_FAILED",
-    );
+    throw new Error("PAYMENT_VERIFICATION_FAILED");
   }
 
-  if (
-    razorpayPayment.order_id !==
-    sellPayment.providerOrderId
-  ) {
+  if (razorpayPayment.order_id !== sellPayment.providerOrderId) {
     throw new Error("PAYMENT_ORDER_MISMATCH");
   }
 
-  if (
-    razorpayPayment.amount !==
-    expectedAmountInPaise
-  ) {
+  if (razorpayPayment.amount !== expectedAmountInPaise) {
     throw new Error("PAYMENT_AMOUNT_MISMATCH");
   }
 
-  if (
-    razorpayPayment.currency !==
-    sellPayment.currency
-  ) {
+  if (razorpayPayment.currency !== sellPayment.currency) {
     throw new Error("PAYMENT_CURRENCY_MISMATCH");
   }
 
@@ -343,15 +308,11 @@ export async function verifySellPayment(
    * Payment must be captured.
    */
   if (razorpayPayment.status !== "captured") {
-    if (
-      razorpayPayment.status === "authorized"
-    ) {
+    if (razorpayPayment.status === "authorized") {
       throw new Error("PAYMENT_NOT_CAPTURED");
     }
 
-    throw new Error(
-      "PAYMENT_VERIFICATION_FAILED",
-    );
+    throw new Error("PAYMENT_VERIFICATION_FAILED");
   }
 
   /**
@@ -360,85 +321,67 @@ export async function verifySellPayment(
    * SellPayment → PAID
    * SellRequest → PICKUP_SCHEDULED
    */
-  const result = await prisma.$transaction(
-    async (tx) => {
-      const currentPayment =
-        await tx.sellPayment.findUnique({
-          where: {
-            id: sellPayment.id,
-          },
-        });
+  const result = await prisma.$transaction(async (tx) => {
+    const currentPayment = await tx.sellPayment.findUnique({
+      where: {
+        id: sellPayment.id,
+      },
+    });
 
-      if (!currentPayment) {
-        throw new Error(
-          "SELL_PAYMENT_NOT_FOUND",
-        );
-      }
+    if (!currentPayment) {
+      throw new Error("SELL_PAYMENT_NOT_FOUND");
+    }
 
-      /**
-       * Another request/webhook may already
-       * have completed this payment.
-       */
-      if (
-        currentPayment.status ===
-        PaymentStatus.PAID
-      ) {
-        return {
-          payment: currentPayment,
-          alreadyProcessed: true,
-        };
-      }
-
-      const updatedPayment =
-        await tx.sellPayment.update({
-          where: {
-            id: currentPayment.id,
-          },
-          data: {
-            providerPaymentId:
-              razorpayPaymentId,
-
-            signature:
-              razorpaySignature,
-
-            status:
-              PaymentStatus.PAID,
-          },
-        });
-
-      await tx.sellRequest.update({
-        where: {
-          id: sellRequest.id,
-        },
-        data: {
-          status:
-            SellRequestStatus.PICKUP_SCHEDULED,
-        },
-      });
-
+    /**
+     * Another request/webhook may already
+     * have completed this payment.
+     */
+    if (currentPayment.status === PaymentStatus.PAID) {
       return {
-        payment: updatedPayment,
-        alreadyProcessed: false,
+        payment: currentPayment,
+        alreadyProcessed: true,
       };
-    },
-  );
+    }
+
+    const updatedPayment = await tx.sellPayment.update({
+      where: {
+        id: currentPayment.id,
+      },
+      data: {
+        providerPaymentId: razorpayPaymentId,
+
+        signature: razorpaySignature,
+
+        status: PaymentStatus.PAID,
+      },
+    });
+
+    await tx.sellRequest.update({
+      where: {
+        id: sellRequest.id,
+      },
+      data: {
+        status: SellRequestStatus.PICKUP_SCHEDULED,
+      },
+    });
+
+    return {
+      payment: updatedPayment,
+      alreadyProcessed: false,
+    };
+  });
 
   return {
     success: true,
-    alreadyProcessed:
-      result.alreadyProcessed,
+    alreadyProcessed: result.alreadyProcessed,
 
-    sellRequestId:
-      sellRequest.id,
+    sellRequestId: sellRequest.id,
 
-    sellPaymentId:
-      result.payment.id,
+    sellPaymentId: result.payment.id,
 
-    razorpayPaymentId:
-      result.payment.providerPaymentId,
+    razorpayPaymentId: result.payment.providerPaymentId,
 
-    status:
-      result.payment.status,
+    status: result.payment.status,
   };
 }
 
@@ -449,93 +392,82 @@ export async function getSellPaymentStatus(
   userId: string,
   sellRequestId: string,
 ) {
-  const sellRequest =
-    await prisma.sellRequest.findFirst({
-      where: {
-        id: sellRequestId,
-        userId,
-      },
-      select: {
-        id: true,
-        status: true,
-        estimatedValue: true,
-        finalValue: true,
-        pickupAddress: true,
-        pickupDate: true,
-        pickupSlot: true,
+  const sellRequest = await prisma.sellRequest.findFirst({
+    where: {
+      id: sellRequestId,
+      userId,
+    },
+    select: {
+      id: true,
+      status: true,
+      estimatedValue: true,
+      finalValue: true,
+      pickupAddress: true,
+      pickupDate: true,
+      pickupSlot: true,
 
-        product: {
-          select: {
-            id: true,
-            name: true,
-            brand: true,
-            images: {
-              orderBy: {
-                position: "asc",
-              },
-              take: 1,
-              select: {
-                url: true,
-              },
+      product: {
+        select: {
+          id: true,
+          name: true,
+          brand: true,
+          images: {
+            orderBy: {
+              position: "asc",
+            },
+            take: 1,
+            select: {
+              url: true,
             },
           },
         },
+      },
 
-        sellPayments: {
-          orderBy: {
-            createdAt: "desc",
-          },
-          take: 1,
-          select: {
-            id: true,
-            amount: true,
-            currency: true,
-            status: true,
-            method: true,
-            providerPaymentId: true,
-            createdAt: true,
-          },
+      sellPayments: {
+        orderBy: {
+          createdAt: "desc",
+        },
+        take: 1,
+        select: {
+          id: true,
+          amount: true,
+          currency: true,
+          status: true,
+          method: true,
+          providerPaymentId: true,
+          createdAt: true,
         },
       },
-    });
+    },
+  });
 
   if (!sellRequest) {
     throw new Error("SELL_REQUEST_NOT_FOUND");
   }
 
-  const payment =
-    sellRequest.sellPayments[0] ?? null;
+  const payment = sellRequest.sellPayments[0] ?? null;
 
   return {
     sellRequestId: sellRequest.id,
 
-    sellRequestStatus:
-      sellRequest.status,
+    sellRequestStatus: sellRequest.status,
 
-    estimatedValue:
-      Number(sellRequest.estimatedValue),
+    estimatedValue: Number(sellRequest.estimatedValue),
 
     finalValue:
-      sellRequest.finalValue !== null
-        ? Number(sellRequest.finalValue)
-        : null,
+      sellRequest.finalValue !== null ? Number(sellRequest.finalValue) : null,
 
-    pickupAddress:
-      sellRequest.pickupAddress,
+    pickupAddress: sellRequest.pickupAddress,
 
-    pickupDate:
-      sellRequest.pickupDate,
+    pickupDate: sellRequest.pickupDate,
 
-    pickupSlot:
-      sellRequest.pickupSlot,
+    pickupSlot: sellRequest.pickupSlot,
 
     product: {
       id: sellRequest.product.id,
       name: sellRequest.product.name,
       brand: sellRequest.product.brand,
-      image:
-        sellRequest.product.images[0]?.url ??
-        null,
+      image: sellRequest.product.images[0]?.url ?? null,
     },
 
     payment: payment
@@ -545,8 +477,7 @@ export async function getSellPaymentStatus(
           currency: payment.currency,
           status: payment.status,
           method: payment.method,
-          razorpayPaymentId:
-            payment.providerPaymentId,
+          razorpayPaymentId: payment.providerPaymentId,
           createdAt: payment.createdAt,
         }
       : null,
