@@ -9,6 +9,7 @@ export const createOrderSchema = z.object({
     "COD",
     "UPI",
     "CARD",
+    "EMI",
   ]),
 });
 
