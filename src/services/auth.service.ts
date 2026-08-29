@@ -11,37 +11,86 @@ import type {
 } from "../validators/auth.validator";
 
 export async function registerUser(input: RegisterInput) {
-  const existingUser = await prisma.user.findUnique({
+  const existingUser = await prisma.user.findFirst({
     where: {
-      email: input.email,
+      OR: [
+        { email: input.email },
+        ...(input.phone ? [{ phone: input.phone }] : []),
+      ],
+    },
+    select: {
+      email: true,
+      phone: true,
     },
   });
 
-  if (existingUser) {
+  if (existingUser?.email === input.email) {
     throw new Error("EMAIL_ALREADY_EXISTS");
+  }
+
+  if (
+    input.phone &&
+    existingUser?.phone === input.phone
+  ) {
+    throw new Error("PHONE_ALREADY_EXISTS");
   }
 
   const passwordHash = await hashPassword(input.password);
 
-  const user = await prisma.user.create({
-    data: {
-      firstName: input.firstName,
-      lastName: input.lastName,
-      email: input.email,
-      passwordHash,
-      phone: input.phone,
-    },
-    select: {
-      id: true,
-      firstName: true,
-      lastName: true,
-      email: true,
-      phone: true,
-      createdAt: true,
-    },
-  });
+  try {
+    const user = await prisma.user.create({
+      data: {
+        firstName: input.firstName,
+        lastName: input.lastName,
+        email: input.email,
+        passwordHash,
+        phone: input.phone,
+      },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        email: true,
+        phone: true,
+        createdAt: true,
+      },
+    });
 
-  return user;
+    return user;
+  } catch (error) {
+    // Database remains the final protection against
+    // simultaneous duplicate registration requests.
+    if (
+      error &&
+      typeof error === "object" &&
+      "code" in error &&
+      error.code === "P2002"
+    ) {
+      const target =
+        "meta" in error &&
+        error.meta &&
+        typeof error.meta === "object" &&
+        "target" in error.meta
+          ? error.meta.target
+          : undefined;
+
+      if (
+        Array.isArray(target) &&
+        target.includes("email")
+      ) {
+        throw new Error("EMAIL_ALREADY_EXISTS");
+      }
+
+      if (
+        Array.isArray(target) &&
+        target.includes("phone")
+      ) {
+        throw new Error("PHONE_ALREADY_EXISTS");
+      }
+    }
+
+    throw error;
+  }
 }
 
 export async function loginUser(input: LoginInput) {

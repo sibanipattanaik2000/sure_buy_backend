@@ -1,4 +1,3 @@
-
 import "dotenv/config";
 import { z } from "zod";
 
@@ -61,6 +60,19 @@ const envSchema = z.object({
   RAZORPAY_WEBHOOK_SECRET: z
     .string()
     .min(1, "RAZORPAY_WEBHOOK_SECRET is required"),
+
+  // Twilio Verify
+  TWILIO_ACCOUNT_SID: z
+    .string()
+    .min(1, "TWILIO_ACCOUNT_SID is required"),
+
+  TWILIO_AUTH_TOKEN: z
+    .string()
+    .min(1, "TWILIO_AUTH_TOKEN is required"),
+
+  TWILIO_VERIFY_SERVICE_SID: z
+    .string()
+    .min(1, "TWILIO_VERIFY_SERVICE_SID is required"),
 });
 
 const parsedEnv = envSchema.safeParse(process.env);
@@ -73,4 +85,3 @@ if (!parsedEnv.success) {
 }
 
 export const env = parsedEnv.data;
-

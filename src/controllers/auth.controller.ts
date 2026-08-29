@@ -54,16 +54,19 @@ export async function register(req: Request, res: Response) {
       });
     }
 
-    if (
-      error instanceof Error &&
-      error.message === "EMAIL_ALREADY_EXISTS"
-    ) {
+    if (error instanceof Error && error.message === "EMAIL_ALREADY_EXISTS") {
       return res.status(409).json({
         success: false,
         message: "Email already registered",
       });
     }
 
+    if (error instanceof Error && error.message === "PHONE_ALREADY_EXISTS") {
+      return res.status(409).json({
+        success: false,
+        message: "Phone number already registered",
+      });
+    }
     console.error("REGISTER ERROR:", error);
 
     return res.status(500).json({
@@ -81,11 +84,7 @@ export async function login(req: Request, res: Response) {
 
     const token = generateToken(user.id);
 
-    res.cookie(
-      AUTH_COOKIE_NAME,
-      token,
-      authCookieOptions
-    );
+    res.cookie(AUTH_COOKIE_NAME, token, authCookieOptions);
 
     return res.status(200).json({
       success: true,
@@ -103,10 +102,7 @@ export async function login(req: Request, res: Response) {
       });
     }
 
-    if (
-      error instanceof Error &&
-      error.message === "INVALID_CREDENTIALS"
-    ) {
+    if (error instanceof Error && error.message === "INVALID_CREDENTIALS") {
       return res.status(401).json({
         success: false,
         message: "Invalid email or password",
@@ -156,10 +152,7 @@ export async function me(req: AuthRequest, res: Response) {
       data: user,
     });
   } catch (error) {
-    if (
-      error instanceof Error &&
-      error.message === "USER_NOT_FOUND"
-    ) {
+    if (error instanceof Error && error.message === "USER_NOT_FOUND") {
       return res.status(404).json({
         success: false,
         message: "User not found",
@@ -175,10 +168,7 @@ export async function me(req: AuthRequest, res: Response) {
   }
 }
 
-export async function updateMe(
-  req: AuthRequest,
-  res: Response,
-) {
+export async function updateMe(req: AuthRequest, res: Response) {
   try {
     if (!req.userId) {
       return res.status(401).json({
@@ -189,10 +179,7 @@ export async function updateMe(
 
     const input = updateProfileSchema.parse(req.body);
 
-    const user = await updateProfile(
-      req.userId,
-      input,
-    );
+    const user = await updateProfile(req.userId, input);
 
     return res.status(200).json({
       success: true,
@@ -210,10 +197,7 @@ export async function updateMe(
       });
     }
 
-    if (
-      error instanceof Error &&
-      error.message === "USER_NOT_FOUND"
-    ) {
+    if (error instanceof Error && error.message === "USER_NOT_FOUND") {
       return res.status(404).json({
         success: false,
         message: "User not found",
@@ -227,10 +211,7 @@ export async function updateMe(
   }
 }
 
-export async function changeUserPassword(
-  req: AuthRequest,
-  res: Response,
-) {
+export async function changeUserPassword(req: AuthRequest, res: Response) {
   try {
     if (!req.userId) {
       return res.status(401).json({
@@ -268,10 +249,7 @@ export async function changeUserPassword(
       });
     }
 
-    if (
-      error instanceof Error &&
-      error.message === "USER_NOT_FOUND"
-    ) {
+    if (error instanceof Error && error.message === "USER_NOT_FOUND") {
       return res.status(404).json({
         success: false,
         message: "User not found",
