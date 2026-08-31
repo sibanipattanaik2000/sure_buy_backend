@@ -3,6 +3,7 @@ import { Router } from "express";
 import {
   getSellCatalogController,
   createSellRequestController,
+  getSellRequestController,
 } from "../controllers/sell.controller";
 
 import { authenticate } from "../middleware/auth.middleware";
@@ -14,15 +15,31 @@ const router = Router();
  *
  * GET /api/v1/sell/catalog
  */
-router.get("/catalog", getSellCatalogController);
+router.get(
+  "/catalog",
+  getSellCatalogController,
+);
 
 /**
- * Authenticated sell operations
+ * Create sell request
+ *
+ * POST /api/v1/sell/requests
  */
 router.post(
   "/requests",
   authenticate,
   createSellRequestController,
+);
+
+/**
+ * Get authenticated user's sell request
+ *
+ * GET /api/v1/sell/requests/:sellRequestId
+ */
+router.get(
+  "/requests/:sellRequestId",
+  authenticate,
+  getSellRequestController,
 );
 
 export default router;

@@ -197,3 +197,158 @@ export async function getSellCatalog() {
     brands: Array.from(brandsMap.values()),
   };
 }
+export async function getSellRequestById(
+  userId: string,
+  sellRequestId: string,
+) {
+  const sellRequest = await prisma.sellRequest.findFirst({
+    where: {
+      id: sellRequestId,
+      userId,
+    },
+
+    select: {
+      id: true,
+      userId: true,
+      productId: true,
+
+      workingStatus: true,
+      screenCondition: true,
+      deviceCondition: true,
+      batteryCondition: true,
+
+      estimatedValue: true,
+      finalValue: true,
+
+      pickupAddress: true,
+      pickupDate: true,
+      pickupSlot: true,
+
+      status: true,
+
+      createdAt: true,
+      updatedAt: true,
+
+      product: {
+        select: {
+          id: true,
+          name: true,
+          brand: true,
+
+          images: {
+            orderBy: {
+              position: "asc",
+            },
+
+            take: 5,
+
+            select: {
+              id: true,
+              url: true,
+              altText: true,
+              position: true,
+            },
+          },
+        },
+      },
+
+      media: {
+        orderBy: {
+          position: "asc",
+        },
+
+        select: {
+          id: true,
+          url: true,
+          key: true,
+          mimeType: true,
+          size: true,
+          position: true,
+          createdAt: true,
+        },
+      },
+
+      sellPayments: {
+        orderBy: {
+          createdAt: "desc",
+        },
+
+        take: 1,
+
+        select: {
+          id: true,
+          amount: true,
+          currency: true,
+          status: true,
+          method: true,
+          providerPaymentId: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      },
+    },
+  });
+
+  if (!sellRequest) {
+    throw new Error("SELL_REQUEST_NOT_FOUND");
+  }
+
+  const payment = sellRequest.sellPayments[0] ?? null;
+
+  return {
+    id: sellRequest.id,
+
+    product: {
+      id: sellRequest.product.id,
+      name: sellRequest.product.name,
+      brand: sellRequest.product.brand,
+
+      images: sellRequest.product.images,
+    },
+
+    conditions: {
+      workingStatus: sellRequest.workingStatus,
+      screenCondition: sellRequest.screenCondition,
+      deviceCondition: sellRequest.deviceCondition,
+      batteryCondition: sellRequest.batteryCondition,
+    },
+
+    valuation: {
+      estimatedValue: Number(
+        sellRequest.estimatedValue,
+      ),
+
+      finalValue:
+        sellRequest.finalValue !== null
+          ? Number(sellRequest.finalValue)
+          : null,
+    },
+
+    pickup: {
+      address: sellRequest.pickupAddress,
+      date: sellRequest.pickupDate,
+      slot: sellRequest.pickupSlot,
+    },
+
+    status: sellRequest.status,
+
+    media: sellRequest.media,
+
+    payment: payment
+      ? {
+          id: payment.id,
+          amount: Number(payment.amount),
+          currency: payment.currency,
+          status: payment.status,
+          method: payment.method,
+          razorpayPaymentId:
+            payment.providerPaymentId,
+          createdAt: payment.createdAt,
+          updatedAt: payment.updatedAt,
+        }
+      : null,
+
+    createdAt: sellRequest.createdAt,
+    updatedAt: sellRequest.updatedAt,
+  };
+}

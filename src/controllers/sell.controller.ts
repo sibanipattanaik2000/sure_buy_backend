@@ -2,10 +2,13 @@ import type { Request, Response } from "express";
 import { z } from "zod";
 
 import type { AuthRequest } from "../middleware/auth.middleware";
+
 import {
   createSellRequest,
   getSellCatalog,
+  getSellRequestById,
 } from "../services/sell.service";
+
 const mediaSchema = z.object({
   url: z.string().url(),
   key: z.string().min(1),
@@ -38,6 +41,10 @@ const createSellRequestSchema = z.object({
     .optional()
     .default([]),
 });
+
+/**
+ * GET /api/v1/sell/catalog
+ */
 export async function getSellCatalogController(
   _req: Request,
   res: Response,
@@ -58,6 +65,10 @@ export async function getSellCatalogController(
     });
   }
 }
+
+/**
+ * POST /api/v1/sell/requests
+ */
 export async function createSellRequestController(
   req: AuthRequest,
   res: Response,
@@ -70,29 +81,37 @@ export async function createSellRequestController(
       });
     }
 
-    const parsed = createSellRequestSchema.safeParse(req.body);
+    const parsed =
+      createSellRequestSchema.safeParse(req.body);
 
     if (!parsed.success) {
       return res.status(400).json({
         success: false,
         message: "Invalid sell request",
-        errors: parsed.error.flatten().fieldErrors,
+        errors:
+          parsed.error.flatten().fieldErrors,
       });
     }
 
     const result = await createSellRequest({
       userId: req.userId,
       ...parsed.data,
-      pickupDate: new Date(parsed.data.pickupDate),
+      pickupDate: new Date(
+        parsed.data.pickupDate,
+      ),
     });
 
     return res.status(201).json({
       success: true,
-      message: "Sell request submitted successfully",
+      message:
+        "Sell request submitted successfully",
       data: result,
     });
   } catch (error) {
-    console.error("CREATE SELL REQUEST ERROR:", error);
+    console.error(
+      "CREATE SELL REQUEST ERROR:",
+      error,
+    );
 
     if (
       error instanceof Error &&
@@ -100,13 +119,74 @@ export async function createSellRequestController(
     ) {
       return res.status(404).json({
         success: false,
-        message: "Selected phone is no longer available",
+        message:
+          "Selected phone is no longer available",
       });
     }
 
     return res.status(500).json({
       success: false,
       message: "Failed to submit sell request",
+    });
+  }
+}
+
+/**
+ * GET /api/v1/sell/requests/:sellRequestId
+ *
+ * Customer can only access their own sell request.
+ */
+export async function getSellRequestController(
+  req: AuthRequest,
+  res: Response,
+) {
+  try {
+    if (!req.userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Authentication required",
+      });
+    }
+
+    const { sellRequestId } = req.params;
+
+    if (typeof sellRequestId !== "string") {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid sell request ID",
+      });
+    }
+
+    const result = await getSellRequestById(
+      req.userId,
+      sellRequestId,
+    );
+
+    return res.status(200).json({
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    console.error(
+      "GET SELL REQUEST ERROR:",
+      error,
+    );
+
+    if (
+      error instanceof Error &&
+      error.message ===
+        "SELL_REQUEST_NOT_FOUND"
+    ) {
+      return res.status(404).json({
+        success: false,
+        message: "Sell request not found",
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      message:
+        "Unable to fetch sell request",
     });
   }
 }
