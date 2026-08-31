@@ -29,7 +29,6 @@ export const registerSchema = z.object({
     .string()
     .trim()
     .regex(/^[6-9]\d{9}$/, "Please enter a valid Indian phone number")
-    .optional(),
 });
 export const loginSchema = z.object({
   email: z
@@ -85,7 +84,54 @@ export const changePasswordSchema = z.object({
     .min(8, "New password must be at least 8 characters")
     .max(72, "New password is too long"),
 });
+export const verifyPhoneSchema = z.object({
+  phone: z
+    .string()
+    .trim()
+    .regex(
+      /^[6-9]\d{9}$/,
+      "Please enter a valid Indian phone number",
+    ),
 
+  code: z
+    .string()
+    .trim()
+    .regex(/^\d{6}$/, "OTP must be a 6-digit code"),
+});
+
+export const forgotPasswordSchema = z.object({
+  phone: z
+    .string()
+    .trim()
+    .regex(
+      /^[6-9]\d{9}$/,
+      "Please enter a valid Indian phone number",
+    ),
+});
+
+export const resetPasswordSchema = z.object({
+  phone: z
+    .string()
+    .trim()
+    .regex(
+      /^[6-9]\d{9}$/,
+      "Please enter a valid Indian phone number",
+    ),
+
+  code: z
+    .string()
+    .trim()
+    .regex(/^\d{6}$/, "OTP must be a 6-digit code"),
+
+  newPassword: z
+    .string()
+    .min(8, "Password must be at least 8 characters")
+    .max(72, "Password is too long"),
+});
+
+export type VerifyPhoneInput = z.infer<typeof verifyPhoneSchema>;
+export type ForgotPasswordInput = z.infer<typeof forgotPasswordSchema>;
+export type ResetPasswordInput = z.infer<typeof resetPasswordSchema>;
 export type ChangePasswordInput = z.infer<
   typeof changePasswordSchema
 >;

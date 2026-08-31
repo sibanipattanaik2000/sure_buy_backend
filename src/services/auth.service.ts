@@ -8,14 +8,20 @@ import type {
   LoginInput,
   UpdateProfileInput,
   ChangePasswordInput,
+  VerifyPhoneInput,
+  ResetPasswordInput,
 } from "../validators/auth.validator";
+import {
+  sendPhoneVerification,
+  verifyPhoneCode,
+} from "./phone-verification.service";
 
 export async function registerUser(input: RegisterInput) {
   const existingUser = await prisma.user.findFirst({
     where: {
       OR: [
         { email: input.email },
-        ...(input.phone ? [{ phone: input.phone }] : []),
+        { phone: input.phone },
       ],
     },
     select: {
@@ -28,10 +34,7 @@ export async function registerUser(input: RegisterInput) {
     throw new Error("EMAIL_ALREADY_EXISTS");
   }
 
-  if (
-    input.phone &&
-    existingUser?.phone === input.phone
-  ) {
+  if (existingUser?.phone === input.phone) {
     throw new Error("PHONE_ALREADY_EXISTS");
   }
 
@@ -45,6 +48,9 @@ export async function registerUser(input: RegisterInput) {
         email: input.email,
         passwordHash,
         phone: input.phone,
+        phoneVerification: {
+          create: {},
+        },
       },
       select: {
         id: true,
@@ -56,10 +62,16 @@ export async function registerUser(input: RegisterInput) {
       },
     });
 
+    try {
+      await sendPhoneVerification(user.phone!);
+    } catch (error) {
+      console.error("REGISTRATION OTP SEND ERROR:", error);
+
+      throw new Error("OTP_SEND_FAILED");
+    }
+
     return user;
   } catch (error) {
-    // Database remains the final protection against
-    // simultaneous duplicate registration requests.
     if (
       error &&
       typeof error === "object" &&
@@ -74,17 +86,11 @@ export async function registerUser(input: RegisterInput) {
           ? error.meta.target
           : undefined;
 
-      if (
-        Array.isArray(target) &&
-        target.includes("email")
-      ) {
+      if (Array.isArray(target) && target.includes("email")) {
         throw new Error("EMAIL_ALREADY_EXISTS");
       }
 
-      if (
-        Array.isArray(target) &&
-        target.includes("phone")
-      ) {
+      if (Array.isArray(target) && target.includes("phone")) {
         throw new Error("PHONE_ALREADY_EXISTS");
       }
     }
@@ -98,8 +104,18 @@ export async function loginUser(input: LoginInput) {
     where: {
       email: input.email,
     },
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      email: true,
+      phone: true,
+      passwordHash: true,
+      createdAt: true,
+    },
   });
 
+  // Do not reveal whether the email exists.
   if (!user) {
     throw new Error("INVALID_CREDENTIALS");
   }
@@ -225,6 +241,110 @@ export async function changePassword(
     },
     data: {
       passwordHash: newPasswordHash,
+    },
+  });
+}
+
+export async function verifyUserPhone(
+  input: VerifyPhoneInput,
+) {
+  const user = await prisma.user.findUnique({
+    where: {
+      phone: input.phone,
+    },
+    include: {
+      phoneVerification: true,
+    },
+  });
+
+  if (!user) {
+    throw new Error("USER_NOT_FOUND");
+  }
+
+  const result = await verifyPhoneCode(
+    input.phone,
+    input.code,
+  );
+
+  if (result?.status !== "approved") {
+    throw new Error("INVALID_OTP");
+  }
+
+  await prisma.userPhoneVerification.upsert({
+    where: {
+      userId: user.id,
+    },
+    create: {
+      userId: user.id,
+      verifiedAt: new Date(),
+    },
+    update: {
+      verifiedAt: new Date(),
+    },
+  });
+
+  return {
+    id: user.id,
+    firstName: user.firstName,
+    lastName: user.lastName,
+    email: user.email,
+    phone: user.phone,
+    createdAt: user.createdAt,
+  };
+}
+
+export async function requestPasswordReset(
+  phone: string,
+) {
+  const user = await prisma.user.findUnique({
+    where: {
+      phone,
+    },
+    select: {
+      id: true,
+      phone: true,
+    },
+  });
+
+  // Do not reveal whether an account exists.
+  if (!user) {
+    return;
+  }
+
+  await sendPhoneVerification(user.phone!);
+}
+export async function resetPasswordWithOtp(
+  input: ResetPasswordInput,
+) {
+  const user = await prisma.user.findUnique({
+    where: {
+      phone: input.phone,
+    },
+  });
+
+  if (!user) {
+    throw new Error("INVALID_RESET_REQUEST");
+  }
+
+  const result = await verifyPhoneCode(
+    input.phone,
+    input.code,
+  );
+
+  if (result?.status !== "approved") {
+    throw new Error("INVALID_OTP");
+  }
+
+  const passwordHash = await hashPassword(
+    input.newPassword,
+  );
+
+  await prisma.user.update({
+    where: {
+      id: user.id,
+    },
+    data: {
+      passwordHash,
     },
   });
 }

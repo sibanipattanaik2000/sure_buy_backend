@@ -1,14 +1,20 @@
 import type { Request, Response } from "express";
-
+import { prisma } from "../config/prisma";
 import { generateToken } from "../utils/jwt";
-
 import {
   registerUser,
   loginUser,
   getCurrentUser,
   updateProfile,
   changePassword,
+  verifyUserPhone,
+  requestPasswordReset,
+  resetPasswordWithOtp,
 } from "../services/auth.service";
+import {
+  sendPhoneVerification,
+  PhoneVerificationError,
+} from "../services/phone-verification.service";
 
 import type { AuthRequest } from "../middleware/auth.middleware";
 
@@ -17,6 +23,9 @@ import {
   loginSchema,
   updateProfileSchema,
   changePasswordSchema,
+  verifyPhoneSchema,
+  forgotPasswordSchema,
+  resetPasswordSchema,
 } from "../validators/auth.validator";
 
 import { ZodError } from "zod";
@@ -259,6 +268,169 @@ export async function changeUserPassword(req: AuthRequest, res: Response) {
     return res.status(500).json({
       success: false,
       message: "Something went wrong",
+    });
+  }
+}
+export async function resendPhoneOtp(
+  req: Request,
+  res: Response,
+) {
+  try {
+    const input = verifyPhoneSchema
+      .omit({ code: true })
+      .parse(req.body);
+
+    const user = await prisma.user.findUnique({
+      where: {
+        phone: input.phone,
+      },
+      select: {
+        id: true,
+        phone: true,
+      },
+    });
+
+    if (!user) {
+      return res.status(200).json({
+        success: true,
+        message:
+          "If an account exists for this phone number, a verification code has been sent.",
+      });
+    }
+
+    await sendPhoneVerification(user.phone!);
+
+    return res.status(200).json({
+      success: true,
+      message: "Verification code sent successfully",
+    });
+  } catch (error) {
+    // handle PhoneVerificationError here
+    console.error("SEND OTP ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to send verification code",
+    });
+  }
+}
+export async function verifyPhone(
+  req: Request,
+  res: Response,
+) {
+  try {
+    const input = verifyPhoneSchema.parse(req.body);
+
+    const user = await verifyUserPhone(input);
+
+    const token = generateToken(user.id);
+
+    res.cookie(
+      AUTH_COOKIE_NAME,
+      token,
+      authCookieOptions,
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Phone number verified successfully",
+      data: {
+        user,
+      },
+    });
+  } catch (error) {
+    console.error("VERIFY PHONE ERROR:", error);
+
+    if (
+      error instanceof Error &&
+      error.message === "USER_NOT_FOUND"
+    ) {
+      return res.status(404).json({
+        success: false,
+        message: "Account not found",
+      });
+    }
+
+    if (
+      error instanceof Error &&
+      error.message === "INVALID_OTP"
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid or expired OTP",
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to verify phone number",
+    });
+  }
+}
+
+export async function forgotPassword(
+  req: Request,
+  res: Response,
+) {
+  try {
+    const { phone } =
+      forgotPasswordSchema.parse(req.body);
+
+    await requestPasswordReset(phone);
+
+    return res.status(200).json({
+      success: true,
+      message:
+        "If an account exists for this phone number, a verification code has been sent.",
+    });
+  } catch (error) {
+    console.error("FORGOT PASSWORD ERROR:", error);
+
+    if (error instanceof ZodError) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid phone number",
+        errors: error.flatten().fieldErrors,
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to process password reset",
+    });
+  }
+}
+export async function resetPassword(
+  req: Request,
+  res: Response,
+) {
+  try {
+    const input =
+      resetPasswordSchema.parse(req.body);
+
+    await resetPasswordWithOtp(input);
+
+    return res.status(200).json({
+      success: true,
+      message:
+        "Password reset successfully",
+    });
+  } catch (error) {
+    console.error("RESET PASSWORD ERROR:", error);
+
+    if (
+      error instanceof Error &&
+      error.message === "INVALID_OTP"
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid or expired OTP",
+      });
+    }
+
+    return res.status(400).json({
+      success: false,
+      message: "Unable to reset password",
     });
   }
 }
