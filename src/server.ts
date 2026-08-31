@@ -1,18 +1,20 @@
+
 import { env } from "./config/env";
 import app from "./app";
 
-const server = app.listen(env.PORT, () => {
+const HOST = "0.0.0.0";
+
+const server = app.listen(env.PORT, HOST, () => {
   console.log(
-    `Sure-Buy API running on port ${env.PORT}`,
+    `Sure-Buy API running on ${HOST}:${env.PORT}`,
   );
 });
 
 function shutdown(signal: string) {
   console.log(`${signal} received. Shutting down server...`);
 
-  server.close(async () => {
+  server.close(() => {
     console.log("HTTP server closed.");
-
     process.exit(0);
   });
 }
