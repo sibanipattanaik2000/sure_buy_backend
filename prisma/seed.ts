@@ -4,180 +4,75 @@ const prisma = new PrismaClient();
 
 const products = [
   {
-    slug: "apple-iphone-15-128gb",
+    slug: "apple-iphone-17",
     brand: "Apple",
-    name: "iPhone 15",
+    name: "iPhone 17",
     category: "Smartphones",
     condition: ProductCondition.EXCELLENT,
-    price: 54999,
-    originalPrice: 69900,
-    warranty: "6 Months Warranty",
+    price: 79900,
+    originalPrice: 89900,
+    warranty: "1 Year Apple Warranty",
     description:
-      "Apple iPhone 15 with powerful performance, excellent camera and premium design.",
-    rating: 4.6,
-    reviewCount: 124,
-    emiFrom: 1999,
+      "Apple iPhone 17 with premium design, powerful performance and advanced camera system.",
+    rating: 0,
+    reviewCount: 0,
+    emiFrom: 2999,
 
     variants: [
       {
-        storage: "128GB",
-        color: "Black",
-        price: 54999,
-        originalPrice: 69900,
+        storage: "256GB",
+        color: "White",
+        price: 79900,
+        originalPrice: 89900,
         stock: 10,
       },
       {
         storage: "256GB",
-        color: "Blue",
-        price: 62999,
-        originalPrice: 79900,
-        stock: 7,
+        color: "Lavender",
+        price: 79900,
+        originalPrice: 89900,
+        stock: 10,
       },
     ],
 
     images: [
       {
-        url: "https://placehold.co/600x600?text=iPhone+15",
-        altText: "Apple iPhone 15",
+        url: "https://media.phonebhai.com/products/iphone-white-17/iphone17-white-full-removebg-preview.png",
+        altText: "iPhone 17 White",
         position: 0,
+      },
+      {
+        url: "https://media.phonebhai.com/products/iphone-white-17/whitei17-front-removebg-preview.png",
+        altText: "iPhone 17 White rear",
+        position: 1,
+      },
+      {
+        url: "https://media.phonebhai.com/products/iphone-white-17/white-back-removebg-preview.webp",
+        altText: "iPhone 17 White side",
+        position: 2,
+      },
+      {
+        url: "https://media.phonebhai.com/products/iphone-lav-17/iphone-lav-full.png",
+        altText: "iPhone 17 Lavender",
+        position: 3,
+      },
+      {
+        url: "https://media.phonebhai.com/products/iphone-lav-17/iphone-lav-front.png",
+        altText: "iPhone 17 Lavender rear",
+        position: 4,
+      },
+      {
+        url: "https://media.phonebhai.com/products/iphone-lav-17/iphone-lav-back.png",
+        altText: "iPhone 17 Lavender side",
+        position: 5,
       },
     ],
 
     highlights: [
-      "A16 Bionic Chip",
-      "48MP Main Camera",
-      "USB-C Charging",
-      "6.1-inch Super Retina Display",
-    ],
-  },
-
-  {
-    slug: "samsung-galaxy-s24-256gb",
-    brand: "Samsung",
-    name: "Galaxy S24",
-    category: "Smartphones",
-    condition: ProductCondition.LIKE_NEW,
-    price: 49999,
-    originalPrice: 74999,
-    warranty: "6 Months Warranty",
-    description:
-      "Samsung Galaxy S24 with flagship performance, AMOLED display and advanced camera system.",
-    rating: 4.5,
-    reviewCount: 98,
-    emiFrom: 1799,
-
-    variants: [
-      {
-        storage: "256GB",
-        color: "Black",
-        price: 49999,
-        originalPrice: 74999,
-        stock: 8,
-      },
-      {
-        storage: "256GB",
-        color: "Violet",
-        price: 50999,
-        originalPrice: 74999,
-        stock: 5,
-      },
-    ],
-
-    images: [
-      {
-        url: "https://placehold.co/600x600?text=Galaxy+S24",
-        altText: "Samsung Galaxy S24",
-        position: 0,
-      },
-    ],
-
-    highlights: [
-      "Snapdragon 8 Gen 3",
-      "50MP Camera",
-      "120Hz AMOLED Display",
-      "AI Features",
-    ],
-  },
-
-  {
-    slug: "oneplus-12-256gb",
-    brand: "OnePlus",
-    name: "OnePlus 12",
-    category: "Smartphones",
-    condition: ProductCondition.EXCELLENT,
-    price: 44999,
-    originalPrice: 64999,
-    warranty: "6 Months Warranty",
-    description:
-      "OnePlus 12 with flagship performance, fast charging and a high refresh rate display.",
-    rating: 4.4,
-    reviewCount: 76,
-    emiFrom: 1599,
-
-    variants: [
-      {
-        storage: "256GB",
-        color: "Black",
-        price: 44999,
-        originalPrice: 64999,
-        stock: 12,
-      },
-    ],
-
-    images: [
-      {
-        url: "https://placehold.co/600x600?text=OnePlus+12",
-        altText: "OnePlus 12",
-        position: 0,
-      },
-    ],
-
-    highlights: [
-      "Snapdragon 8 Gen 3",
-      "50MP Hasselblad Camera",
-      "100W Fast Charging",
-      "120Hz Display",
-    ],
-  },
-
-  {
-    slug: "google-pixel-8-128gb",
-    brand: "Google",
-    name: "Pixel 8",
-    category: "Smartphones",
-    condition: ProductCondition.GOOD,
-    price: 32999,
-    originalPrice: 75999,
-    warranty: "3 Months Warranty",
-    description:
-      "Google Pixel 8 with excellent computational photography and clean Android experience.",
-    rating: 4.3,
-    reviewCount: 61,
-    emiFrom: 1199,
-
-    variants: [
-      {
-        storage: "128GB",
-        color: "Black",
-        price: 32999,
-        originalPrice: 75999,
-        stock: 6,
-      },
-    ],
-
-    images: [
-      {
-        url: "https://placehold.co/600x600?text=Pixel+8",
-        altText: "Google Pixel 8",
-        position: 0,
-      },
-    ],
-
-    highlights: [
-      "Google Tensor G3",
-      "50MP Main Camera",
-      "Pure Android",
-      "7 Years of Updates",
+      "Powerful Apple performance",
+      "Advanced camera system",
+      "Premium design",
+      "USB-C charging",
     ],
   },
 ];
@@ -246,39 +141,104 @@ async function seedProduct(productData: (typeof products)[number]) {
    * ---------------------------------------------------------
    * PRODUCT IMAGES
    * ---------------------------------------------------------
-   *
-   * Images are matched by product + position.
-   *
-   * Existing images are updated instead of deleted.
    */
 
-  for (const image of images) {
-    const existingImage = await prisma.productImage.findFirst({
+  const variantRecords = await prisma.productVariant.findMany({
+    where: {
+      productId: createdProduct.id,
+    },
+    select: {
+      id: true,
+      color: true,
+      storage: true,
+    },
+  });
+
+  const whiteVariant = variantRecords.find(
+    (variant) => variant.color.toLowerCase() === "white",
+  );
+
+  const lavenderVariant = variantRecords.find(
+    (variant) => variant.color.toLowerCase() === "lavender",
+  );
+
+  if (
+    createdProduct.slug === "apple-iphone-17" &&
+    (!whiteVariant || !lavenderVariant)
+  ) {
+    throw new Error("iPhone 17 White/Lavender variants were not found.");
+  }
+
+  if (createdProduct.slug === "apple-iphone-17") {
+    await prisma.productImage.deleteMany({
       where: {
         productId: createdProduct.id,
-        position: image.position,
       },
     });
 
-    if (existingImage) {
-      await prisma.productImage.update({
-        where: {
-          id: existingImage.id,
-        },
-        data: {
-          url: image.url,
-          altText: image.altText,
-        },
-      });
-    } else {
-      await prisma.productImage.create({
-        data: {
+    const whiteImages = images.filter((image) =>
+      image.url.includes("/iphone-white-17/"),
+    );
+
+    const lavenderImages = images.filter((image) =>
+      image.url.includes("/iphone-lav-17/"),
+    );
+
+    await prisma.productImage.createMany({
+      data: [
+        ...whiteImages.map((image, index) => ({
           productId: createdProduct.id,
+          variantId: whiteVariant!.id,
           url: image.url,
+          key: image.url.replace("https://media.phonebhai.com/", ""),
           altText: image.altText,
+          type: "IMAGE" as const,
+          mimeType: "image/png",
+          position: index,
+        })),
+
+        ...lavenderImages.map((image, index) => ({
+          productId: createdProduct.id,
+          variantId: lavenderVariant!.id,
+          url: image.url,
+          key: image.url.replace("https://media.phonebhai.com/", ""),
+          altText: image.altText,
+          type: "IMAGE" as const,
+          mimeType: "image/png",
+          position: index,
+        })),
+      ],
+    });
+  } else {
+    for (const image of images) {
+      const existingImage = await prisma.productImage.findFirst({
+        where: {
+          productId: createdProduct.id,
           position: image.position,
+          variantId: null,
         },
       });
+
+      if (existingImage) {
+        await prisma.productImage.update({
+          where: {
+            id: existingImage.id,
+          },
+          data: {
+            url: image.url,
+            altText: image.altText,
+          },
+        });
+      } else {
+        await prisma.productImage.create({
+          data: {
+            productId: createdProduct.id,
+            url: image.url,
+            altText: image.altText,
+            position: image.position,
+          },
+        });
+      }
     }
   }
 
@@ -291,13 +251,12 @@ async function seedProduct(productData: (typeof products)[number]) {
    */
 
   for (const [position, text] of highlights.entries()) {
-    const existingHighlight =
-      await prisma.productHighlight.findFirst({
-        where: {
-          productId: createdProduct.id,
-          position,
-        },
-      });
+    const existingHighlight = await prisma.productHighlight.findFirst({
+      where: {
+        productId: createdProduct.id,
+        position,
+      },
+    });
 
     if (existingHighlight) {
       await prisma.productHighlight.update({

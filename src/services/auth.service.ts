@@ -1,7 +1,5 @@
-import { prisma } from "../config/prisma";import {
-  hashPassword,
-  comparePassword,
-} from "../utils/password";
+import { prisma } from "../config/prisma";
+import { hashPassword, comparePassword } from "../utils/password";
 
 import type {
   RegisterInput,
@@ -19,10 +17,7 @@ import {
 export async function registerUser(input: RegisterInput) {
   const existingUser = await prisma.user.findFirst({
     where: {
-      OR: [
-        { email: input.email },
-        { phone: input.phone },
-      ],
+      OR: [{ email: input.email }, { phone: input.phone }],
     },
     select: {
       email: true,
@@ -66,6 +61,15 @@ export async function registerUser(input: RegisterInput) {
       await sendPhoneVerification(user.phone!);
     } catch (error) {
       console.error("REGISTRATION OTP SEND ERROR:", error);
+
+      // OTP could not be sent, so remove the newly created user.
+      // UserPhoneVerification is removed automatically because
+      // the Prisma relation uses onDelete: Cascade.
+      await prisma.user.delete({
+        where: {
+          id: user.id,
+        },
+      });
 
       throw new Error("OTP_SEND_FAILED");
     }
@@ -161,10 +165,7 @@ export async function getCurrentUser(userId: string) {
   return user;
 }
 
-export async function updateProfile(
-  userId: string,
-  input: UpdateProfileInput,
-) {
+export async function updateProfile(userId: string, input: UpdateProfileInput) {
   const user = await prisma.user.findUnique({
     where: {
       id: userId,
@@ -231,9 +232,7 @@ export async function changePassword(
     throw new Error("INVALID_CURRENT_PASSWORD");
   }
 
-  const newPasswordHash = await hashPassword(
-    input.newPassword,
-  );
+  const newPasswordHash = await hashPassword(input.newPassword);
 
   await prisma.user.update({
     where: {
@@ -245,9 +244,7 @@ export async function changePassword(
   });
 }
 
-export async function verifyUserPhone(
-  input: VerifyPhoneInput,
-) {
+export async function verifyUserPhone(input: VerifyPhoneInput) {
   const user = await prisma.user.findUnique({
     where: {
       phone: input.phone,
@@ -261,10 +258,7 @@ export async function verifyUserPhone(
     throw new Error("USER_NOT_FOUND");
   }
 
-  const result = await verifyPhoneCode(
-    input.phone,
-    input.code,
-  );
+  const result = await verifyPhoneCode(input.phone, input.code);
 
   if (result?.status !== "approved") {
     throw new Error("INVALID_OTP");
@@ -293,9 +287,7 @@ export async function verifyUserPhone(
   };
 }
 
-export async function requestPasswordReset(
-  phone: string,
-) {
+export async function requestPasswordReset(phone: string) {
   const user = await prisma.user.findUnique({
     where: {
       phone,
@@ -313,9 +305,7 @@ export async function requestPasswordReset(
 
   await sendPhoneVerification(user.phone!);
 }
-export async function resetPasswordWithOtp(
-  input: ResetPasswordInput,
-) {
+export async function resetPasswordWithOtp(input: ResetPasswordInput) {
   const user = await prisma.user.findUnique({
     where: {
       phone: input.phone,
@@ -326,18 +316,13 @@ export async function resetPasswordWithOtp(
     throw new Error("INVALID_RESET_REQUEST");
   }
 
-  const result = await verifyPhoneCode(
-    input.phone,
-    input.code,
-  );
+  const result = await verifyPhoneCode(input.phone, input.code);
 
   if (result?.status !== "approved") {
     throw new Error("INVALID_OTP");
   }
 
-  const passwordHash = await hashPassword(
-    input.newPassword,
-  );
+  const passwordHash = await hashPassword(input.newPassword);
 
   await prisma.user.update({
     where: {
