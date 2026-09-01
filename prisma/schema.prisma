@@ -499,3 +499,15 @@ model SellRequest {
   @@index([status])
   @@index([createdAt])
 }
+
+model NewsletterSubscriber {
+  id             String    @id @default(cuid())
+  email          String    @unique
+  isActive       Boolean   @default(true)
+  subscribedAt   DateTime  @default(now())
+  unsubscribedAt DateTime?
+  updatedAt      DateTime  @updatedAt
+
+  @@index([isActive])
+  @@index([subscribedAt])
+}

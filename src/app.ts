@@ -5,7 +5,7 @@ import cookieParser from "cookie-parser";
 import rateLimit from "express-rate-limit";
 import wishlistRoutes from "./routes/wishlist.routes";
 import { env } from "./config/env";
-
+import newsletterRoutes from "./routes/newsletter.routes";
 import authRoutes from "./routes/auth.routes";
 import productRoutes from "./routes/product.routes";
 import addressRoutes from "./routes/address.routes";
@@ -104,6 +104,10 @@ app.use("/api/v1/wishlist", wishlistRoutes);
 app.use("/api/v1/sell", sellRoutes);
 app.use("/api/v1/payments", paymentRoutes);
 app.use("/api/v1/sell/payments", sellPaymentRoutes);
+app.use(
+  "/api/v1/newsletter",
+  newsletterRoutes,
+);
 /**
  * 404 handler
  */
