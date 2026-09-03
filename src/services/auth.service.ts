@@ -15,23 +15,100 @@ import {
 } from "./phone-verification.service";
 
 export async function registerUser(input: RegisterInput) {
-  const existingUser = await prisma.user.findFirst({
+  const existingEmailUser = await prisma.user.findUnique({
     where: {
-      OR: [{ email: input.email }, { phone: input.phone }],
+      email: input.email,
     },
-    select: {
-      email: true,
-      phone: true,
+    include: {
+      phoneVerification: true,
     },
   });
 
-  if (existingUser?.email === input.email) {
+  const existingPhoneUser = await prisma.user.findUnique({
+    where: {
+      phone: input.phone,
+    },
+    include: {
+      phoneVerification: true,
+    },
+  });
+
+  /*
+   * ---------------------------------------------------------
+   * EXISTING EMAIL
+   * ---------------------------------------------------------
+   */
+
+  if (existingEmailUser) {
+    const isEmailVerified =
+      existingEmailUser.phoneVerification?.verifiedAt !== null &&
+      existingEmailUser.phoneVerification?.verifiedAt !== undefined;
+
+    /*
+     * A verified account is a real existing account.
+     */
+    if (isEmailVerified) {
+      throw new Error("EMAIL_ALREADY_EXISTS");
+    }
+
+    /*
+     * The email exists but the account is still unverified.
+     *
+     * Only allow the registration flow to continue when the
+     * phone number is also the same account's phone number.
+     */
+    if (existingEmailUser.phone === input.phone) {
+      await sendPhoneVerification(input.phone);
+
+      return {
+        id: existingEmailUser.id,
+        firstName: existingEmailUser.firstName,
+        lastName: existingEmailUser.lastName,
+        email: existingEmailUser.email,
+        phone: existingEmailUser.phone,
+        createdAt: existingEmailUser.createdAt,
+      };
+    }
+
+    /*
+     * Same email but different phone:
+     * do not overwrite or modify the existing account.
+     */
     throw new Error("EMAIL_ALREADY_EXISTS");
   }
 
-  if (existingUser?.phone === input.phone) {
+  /*
+   * ---------------------------------------------------------
+   * EXISTING PHONE
+   * ---------------------------------------------------------
+   */
+
+  if (existingPhoneUser) {
+    const isPhoneVerified =
+      existingPhoneUser.phoneVerification?.verifiedAt !== null &&
+      existingPhoneUser.phoneVerification?.verifiedAt !== undefined;
+
+    /*
+     * A verified phone belongs to an existing account.
+     */
+    if (isPhoneVerified) {
+      throw new Error("PHONE_ALREADY_EXISTS");
+    }
+
+    /*
+     * Unverified phone with a different email.
+     *
+     * Do not merge two registration attempts because that could
+     * associate the wrong email/password with an existing account.
+     */
     throw new Error("PHONE_ALREADY_EXISTS");
   }
+
+  /*
+   * ---------------------------------------------------------
+   * BRAND NEW ACCOUNT
+   * ---------------------------------------------------------
+   */
 
   const passwordHash = await hashPassword(input.password);
 
@@ -57,14 +134,18 @@ export async function registerUser(input: RegisterInput) {
       },
     });
 
+    /*
+     * Send OTP only after the user has been successfully created.
+     */
     try {
       await sendPhoneVerification(user.phone!);
     } catch (error) {
       console.error("REGISTRATION OTP SEND ERROR:", error);
 
-      // OTP could not be sent, so remove the newly created user.
-      // UserPhoneVerification is removed automatically because
-      // the Prisma relation uses onDelete: Cascade.
+      /*
+       * Do not leave an unusable account in the database if the
+       * initial OTP could not be sent.
+       */
       await prisma.user.delete({
         where: {
           id: user.id,
@@ -76,6 +157,9 @@ export async function registerUser(input: RegisterInput) {
 
     return user;
   } catch (error) {
+    /*
+     * Handle concurrent registration requests safely.
+     */
     if (
       error &&
       typeof error === "object" &&

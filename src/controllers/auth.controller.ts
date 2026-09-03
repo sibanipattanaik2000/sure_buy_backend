@@ -42,7 +42,6 @@ const authCookieOptions = {
   maxAge: 7 * 24 * 60 * 60 * 1000,
   path: "/",
 };
-
 export async function register(req: Request, res: Response) {
   try {
     const input = registerSchema.parse(req.body);
@@ -76,6 +75,14 @@ export async function register(req: Request, res: Response) {
         message: "Phone number already registered",
       });
     }
+
+    if (error instanceof Error && error.message === "OTP_SEND_FAILED") {
+      return res.status(503).json({
+        success: false,
+        message: "Unable to send verification code. Please try again.",
+      });
+    }
+
     console.error("REGISTER ERROR:", error);
 
     return res.status(500).json({
@@ -271,14 +278,9 @@ export async function changeUserPassword(req: AuthRequest, res: Response) {
     });
   }
 }
-export async function resendPhoneOtp(
-  req: Request,
-  res: Response,
-) {
+export async function resendPhoneOtp(req: Request, res: Response) {
   try {
-    const input = verifyPhoneSchema
-      .omit({ code: true })
-      .parse(req.body);
+    const input = verifyPhoneSchema.omit({ code: true }).parse(req.body);
 
     const user = await prisma.user.findUnique({
       where: {
@@ -314,10 +316,7 @@ export async function resendPhoneOtp(
     });
   }
 }
-export async function verifyPhone(
-  req: Request,
-  res: Response,
-) {
+export async function verifyPhone(req: Request, res: Response) {
   try {
     const input = verifyPhoneSchema.parse(req.body);
 
@@ -325,11 +324,7 @@ export async function verifyPhone(
 
     const token = generateToken(user.id);
 
-    res.cookie(
-      AUTH_COOKIE_NAME,
-      token,
-      authCookieOptions,
-    );
+    res.cookie(AUTH_COOKIE_NAME, token, authCookieOptions);
 
     return res.status(200).json({
       success: true,
@@ -341,20 +336,14 @@ export async function verifyPhone(
   } catch (error) {
     console.error("VERIFY PHONE ERROR:", error);
 
-    if (
-      error instanceof Error &&
-      error.message === "USER_NOT_FOUND"
-    ) {
+    if (error instanceof Error && error.message === "USER_NOT_FOUND") {
       return res.status(404).json({
         success: false,
         message: "Account not found",
       });
     }
 
-    if (
-      error instanceof Error &&
-      error.message === "INVALID_OTP"
-    ) {
+    if (error instanceof Error && error.message === "INVALID_OTP") {
       return res.status(400).json({
         success: false,
         message: "Invalid or expired OTP",
@@ -368,13 +357,9 @@ export async function verifyPhone(
   }
 }
 
-export async function forgotPassword(
-  req: Request,
-  res: Response,
-) {
+export async function forgotPassword(req: Request, res: Response) {
   try {
-    const { phone } =
-      forgotPasswordSchema.parse(req.body);
+    const { phone } = forgotPasswordSchema.parse(req.body);
 
     await requestPasswordReset(phone);
 
@@ -400,28 +385,20 @@ export async function forgotPassword(
     });
   }
 }
-export async function resetPassword(
-  req: Request,
-  res: Response,
-) {
+export async function resetPassword(req: Request, res: Response) {
   try {
-    const input =
-      resetPasswordSchema.parse(req.body);
+    const input = resetPasswordSchema.parse(req.body);
 
     await resetPasswordWithOtp(input);
 
     return res.status(200).json({
       success: true,
-      message:
-        "Password reset successfully",
+      message: "Password reset successfully",
     });
   } catch (error) {
     console.error("RESET PASSWORD ERROR:", error);
 
-    if (
-      error instanceof Error &&
-      error.message === "INVALID_OTP"
-    ) {
+    if (error instanceof Error && error.message === "INVALID_OTP") {
       return res.status(400).json({
         success: false,
         message: "Invalid or expired OTP",
