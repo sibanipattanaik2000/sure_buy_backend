@@ -105,17 +105,12 @@ function serializeOrder(order: OrderWithItems) {
 function generateOrderNumber(): string {
   const timestamp = Date.now().toString(36).toUpperCase();
 
-  const random = Math.random()
-    .toString(36)
-    .substring(2, 8)
-    .toUpperCase();
+  const random = Math.random().toString(36).substring(2, 8).toUpperCase();
 
   return `SB-${timestamp}-${random}`;
 }
 
-async function createUniqueOrderNumber(
-  tx: TransactionClient,
-): Promise<string> {
+async function createUniqueOrderNumber(tx: TransactionClient): Promise<string> {
   for (let attempt = 0; attempt < 5; attempt++) {
     const orderNumber = generateOrderNumber();
 
@@ -136,10 +131,7 @@ async function createUniqueOrderNumber(
   throw new Error("ORDER_NUMBER_GENERATION_FAILED");
 }
 
-export async function createOrder(
-  userId: string,
-  input: CreateOrderInput,
-) {
+export async function createOrder(userId: string, input: CreateOrderInput) {
   return prisma.$transaction(
     async (tx) => {
       /*
@@ -178,24 +170,24 @@ export async function createOrder(
             },
 
             include: {
-            product: {
-  include: {
-    images: {
-      orderBy: {
-        position: "asc",
-      },
-      take: 1,
-    },
+              product: {
+                include: {
+                  images: {
+                    orderBy: {
+                      position: "asc",
+                    },
+                    take: 1,
+                  },
 
-    variants: {
-      select: {
-        id: true,
-        productId: true,
-        stock: true,
-      },
-    },
-  },
-},
+                  variants: {
+                    select: {
+                      id: true,
+                      productId: true,
+                      stock: true,
+                    },
+                  },
+                },
+              },
 
               variant: {
                 include: {
@@ -264,20 +256,15 @@ export async function createOrder(
         );
 
         const originalPrice = decimalToNumber(
-          item.variant?.originalPrice ??
-            item.product.originalPrice,
+          item.variant?.originalPrice ?? item.product.originalPrice,
         );
 
-        const itemSubtotal = Number(
-          (unitPrice * item.quantity).toFixed(2),
-        );
+        const itemSubtotal = Number((unitPrice * item.quantity).toFixed(2));
 
         subtotal += itemSubtotal;
 
         const imageUrl =
-          item.variant?.images[0]?.url ??
-          item.product.images[0]?.url ??
-          null;
+          item.variant?.images[0]?.url ?? item.product.images[0]?.url ?? null;
 
         return {
           cartItemId: item.id,
@@ -317,18 +304,13 @@ export async function createOrder(
       const discountAmount = 0;
 
       const totalAmount = Number(
-        (
-          subtotal +
-          deliveryAmount -
-          discountAmount
-        ).toFixed(2),
+        (subtotal + deliveryAmount - discountAmount).toFixed(2),
       );
 
       /*
        * 5. Generate a unique order number.
        */
-      const orderNumber =
-        await createUniqueOrderNumber(tx);
+      const orderNumber = await createUniqueOrderNumber(tx);
 
       /*
        * 6. Create the order and snapshot the shipping
@@ -340,8 +322,10 @@ export async function createOrder(
 
           userId,
 
-          status: OrderStatus.PENDING,
-
+          status:
+            input.paymentMethod === "COD"
+              ? OrderStatus.CONFIRMED
+              : OrderStatus.PENDING,
           paymentStatus: PaymentStatus.PENDING,
 
           paymentMethod: input.paymentMethod,
@@ -356,23 +340,18 @@ export async function createOrder(
           shippingFullName: address.fullName,
           shippingPhone: address.phone,
 
-          shippingAddressLine1:
-            address.addressLine1,
+          shippingAddressLine1: address.addressLine1,
 
-          shippingAddressLine2:
-            address.addressLine2,
+          shippingAddressLine2: address.addressLine2,
 
           shippingCity: address.city,
           shippingState: address.state,
 
-          shippingPostalCode:
-            address.postalCode,
+          shippingPostalCode: address.postalCode,
 
-          shippingCountry:
-            address.country,
+          shippingCountry: address.country,
 
-          shippingLandmark:
-            address.landmark,
+          shippingLandmark: address.landmark,
 
           items: {
             create: orderItems.map((item) => ({
@@ -427,24 +406,23 @@ export async function createOrder(
           continue;
         }
 
-        const updatedVariant =
-          await tx.productVariant.updateMany({
-            where: {
-              id: item.variantId,
+        const updatedVariant = await tx.productVariant.updateMany({
+          where: {
+            id: item.variantId,
 
-              productId: item.productId,
+            productId: item.productId,
 
-              stock: {
-                gte: item.quantity,
-              },
+            stock: {
+              gte: item.quantity,
             },
+          },
 
-            data: {
-              stock: {
-                decrement: item.quantity,
-              },
+          data: {
+            stock: {
+              decrement: item.quantity,
             },
-          });
+          },
+        });
 
         if (updatedVariant.count !== 1) {
           throw new Error("INSUFFICIENT_STOCK");
@@ -452,17 +430,23 @@ export async function createOrder(
       }
 
       /*
-       * 8. Clear the purchased cart.
+       * COD:
+       * Order is immediately confirmed, so remove the
+       * purchased cart items now.
        *
-       * Because this is inside the same transaction,
-       * failure anywhere above automatically rolls back
-       * the order, stock changes and cart changes.
+       * ONLINE:
+       * Keep cart items until Razorpay payment is actually
+       * captured. This allows the customer to retry payment
+       * after closing/cancelling Razorpay without getting
+       * "Your cart is empty".
        */
-      await tx.cartItem.deleteMany({
-        where: {
-          cartId: cart.id,
-        },
-      });
+      if (input.paymentMethod === "COD") {
+        await tx.cartItem.deleteMany({
+          where: {
+            cartId: cart.id,
+          },
+        });
+      }
 
       return serializeOrder(order);
     },
@@ -471,16 +455,12 @@ export async function createOrder(
        * Serializable isolation gives the transaction the
        * strongest consistency level supported by PostgreSQL.
        */
-      isolationLevel:
-        Prisma.TransactionIsolationLevel.Serializable,
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
     },
   );
 }
 
-export async function getOrderById(
-  userId: string,
-  orderId: string,
-) {
+export async function getOrderById(userId: string, orderId: string) {
   const order = await prisma.order.findFirst({
     where: {
       id: orderId,
@@ -496,9 +476,7 @@ export async function getOrderById(
   return serializeOrder(order);
 }
 
-export async function getUserOrders(
-  userId: string,
-) {
+export async function getUserOrders(userId: string) {
   const orders = await prisma.order.findMany({
     where: {
       userId,
@@ -514,10 +492,7 @@ export async function getUserOrders(
   return orders.map(serializeOrder);
 }
 
-export async function cancelOrder(
-  userId: string,
-  orderId: string,
-) {
+export async function cancelOrder(userId: string, orderId: string) {
   return prisma.$transaction(
     async (tx) => {
       const order = await tx.order.findFirst({
@@ -545,11 +520,7 @@ export async function cancelOrder(
         OrderStatus.CONFIRMED,
       ];
 
-      if (
-        !cancellableStatuses.includes(
-          order.status,
-        )
-      ) {
+      if (!cancellableStatuses.includes(order.status)) {
         throw new Error("ORDER_CANNOT_BE_CANCELLED");
       }
 
@@ -575,30 +546,27 @@ export async function cancelOrder(
       }
 
       const paymentStatus =
-        order.paymentStatus ===
-        PaymentStatus.PAID
+        order.paymentStatus === PaymentStatus.PAID
           ? PaymentStatus.REFUNDED
           : order.paymentStatus;
 
-      const updatedOrder =
-        await tx.order.update({
-          where: {
-            id: order.id,
-          },
+      const updatedOrder = await tx.order.update({
+        where: {
+          id: order.id,
+        },
 
-          data: {
-            status: OrderStatus.CANCELLED,
-            paymentStatus,
-          },
+        data: {
+          status: OrderStatus.CANCELLED,
+          paymentStatus,
+        },
 
-          include: ORDER_INCLUDE,
-        });
+        include: ORDER_INCLUDE,
+      });
 
       return serializeOrder(updatedOrder);
     },
     {
-      isolationLevel:
-        Prisma.TransactionIsolationLevel.Serializable,
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
     },
   );
 }

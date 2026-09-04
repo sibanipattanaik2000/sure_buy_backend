@@ -1,4 +1,3 @@
-
 import crypto from "crypto";
 import {
   PaymentMethod,
@@ -28,12 +27,7 @@ function toNumber(value: Prisma.Decimal | number): number {
  * SureBuy order.
  */
 
-
-
-export async function createRazorpayOrder(
-  userId: string,
-  orderId: string,
-) {
+export async function createRazorpayOrder(userId: string, orderId: string) {
   const order = await prisma.order.findFirst({
     where: {
       id: orderId,
@@ -61,41 +55,34 @@ export async function createRazorpayOrder(
     throw new Error("COD_ORDER_CANNOT_USE_RAZORPAY");
   }
 
-  const existingPayment =
-    await prisma.payment.findFirst({
-      where: {
-        orderId: order.id,
-        provider: "RAZORPAY",
-        status: {
-          in: [
-            PaymentStatus.PENDING,
-            PaymentStatus.AUTHORIZED,
-          ],
-        },
-        providerOrderId: {
-          not: null,
-        },
+  const existingPayment = await prisma.payment.findFirst({
+    where: {
+      orderId: order.id,
+      provider: "RAZORPAY",
+      status: {
+        in: [PaymentStatus.PENDING, PaymentStatus.AUTHORIZED],
       },
-      orderBy: {
-        createdAt: "desc",
+      providerOrderId: {
+        not: null,
       },
-      select: {
-        providerOrderId: true,
-        amount: true,
-        currency: true,
-      },
-    });
+    },
+    orderBy: {
+      createdAt: "desc",
+    },
+    select: {
+      providerOrderId: true,
+      amount: true,
+      currency: true,
+    },
+  });
 
   if (existingPayment?.providerOrderId) {
     return {
       orderId: order.id,
       orderNumber: order.orderNumber,
-      razorpayOrderId:
-        existingPayment.providerOrderId,
+      razorpayOrderId: existingPayment.providerOrderId,
       amount: toNumber(existingPayment.amount),
-      amountInPaise: toPaise(
-        toNumber(existingPayment.amount),
-      ),
+      amountInPaise: toPaise(toNumber(existingPayment.amount)),
       currency: existingPayment.currency,
       keyId: env.RAZORPAY_KEY_ID,
     };
@@ -103,17 +90,16 @@ export async function createRazorpayOrder(
 
   const amount = toNumber(order.totalAmount);
 
-  const razorpayOrder =
-    await razorpay.orders.create({
-      amount: toPaise(amount),
-      currency: order.currency,
-      receipt: order.orderNumber,
-      notes: {
-        orderId: order.id,
-        orderNumber: order.orderNumber,
-        userId,
-      },
-    });
+  const razorpayOrder = await razorpay.orders.create({
+    amount: toPaise(amount),
+    currency: order.currency,
+    receipt: order.orderNumber,
+    notes: {
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      userId,
+    },
+  });
 
   await prisma.payment.create({
     data: {
@@ -153,11 +139,7 @@ export async function verifyRazorpayPayment(
   razorpayOrderId: string,
   razorpaySignature: string,
 ) {
-  if (
-    !razorpayPaymentId ||
-    !razorpayOrderId ||
-    !razorpaySignature
-  ) {
+  if (!razorpayPaymentId || !razorpayOrderId || !razorpaySignature) {
     throw new Error("INVALID_PAYMENT_RESPONSE");
   }
 
@@ -219,18 +201,11 @@ export async function verifyRazorpayPayment(
    * =========================================================
    */
 
-  const expectedAmountInPaise = toPaise(
-    toNumber(order.totalAmount),
-  );
+  const expectedAmountInPaise = toPaise(toNumber(order.totalAmount));
 
-  const paymentAmountInPaise = toPaise(
-    toNumber(payment.amount),
-  );
+  const paymentAmountInPaise = toPaise(toNumber(payment.amount));
 
-  if (
-    expectedAmountInPaise !==
-    paymentAmountInPaise
-  ) {
+  if (expectedAmountInPaise !== paymentAmountInPaise) {
     throw new Error("PAYMENT_AMOUNT_MISMATCH");
   }
 
@@ -240,9 +215,7 @@ export async function verifyRazorpayPayment(
    * =========================================================
    */
 
-  if (
-    payment.currency !== order.currency
-  ) {
+  if (payment.currency !== order.currency) {
     throw new Error("PAYMENT_CURRENCY_MISMATCH");
   }
 
@@ -257,8 +230,7 @@ export async function verifyRazorpayPayment(
    */
 
   if (
-    payment.providerPaymentId ===
-      razorpayPaymentId &&
+    payment.providerPaymentId === razorpayPaymentId &&
     payment.status === PaymentStatus.PAID
   ) {
     return {
@@ -285,41 +257,21 @@ export async function verifyRazorpayPayment(
    * Razorpay recommends server-side signature verification.
    */
 
-  const expectedSignature =
-    crypto
-      .createHmac(
-        "sha256",
-        env.RAZORPAY_KEY_SECRET,
-      )
-      .update(
-        `${payment.providerOrderId}|${razorpayPaymentId}`,
-      )
-      .digest("hex");
+  const expectedSignature = crypto
+    .createHmac("sha256", env.RAZORPAY_KEY_SECRET)
+    .update(`${payment.providerOrderId}|${razorpayPaymentId}`)
+    .digest("hex");
 
-  const receivedBuffer =
-    Buffer.from(razorpaySignature);
+  const receivedBuffer = Buffer.from(razorpaySignature);
 
-  const expectedBuffer =
-    Buffer.from(expectedSignature);
+  const expectedBuffer = Buffer.from(expectedSignature);
 
-  if (
-    receivedBuffer.length !==
-    expectedBuffer.length
-  ) {
-    throw new Error(
-      "INVALID_PAYMENT_SIGNATURE",
-    );
+  if (receivedBuffer.length !== expectedBuffer.length) {
+    throw new Error("INVALID_PAYMENT_SIGNATURE");
   }
 
-  if (
-    !crypto.timingSafeEqual(
-      receivedBuffer,
-      expectedBuffer,
-    )
-  ) {
-    throw new Error(
-      "INVALID_PAYMENT_SIGNATURE",
-    );
+  if (!crypto.timingSafeEqual(receivedBuffer, expectedBuffer)) {
+    throw new Error("INVALID_PAYMENT_SIGNATURE");
   }
 
   /*
@@ -334,19 +286,11 @@ export async function verifyRazorpayPayment(
   let razorpayPayment;
 
   try {
-    razorpayPayment =
-      await razorpay.payments.fetch(
-        razorpayPaymentId,
-      );
+    razorpayPayment = await razorpay.payments.fetch(razorpayPaymentId);
   } catch (error) {
-    console.error(
-      "RAZORPAY PAYMENT FETCH ERROR:",
-      error,
-    );
+    console.error("RAZORPAY PAYMENT FETCH ERROR:", error);
 
-    throw new Error(
-      "PAYMENT_VERIFICATION_FAILED",
-    );
+    throw new Error("PAYMENT_VERIFICATION_FAILED");
   }
 
   /*
@@ -355,13 +299,8 @@ export async function verifyRazorpayPayment(
    * =========================================================
    */
 
-  if (
-    razorpayPayment.order_id !==
-    payment.providerOrderId
-  ) {
-    throw new Error(
-      "PAYMENT_ORDER_MISMATCH",
-    );
+  if (razorpayPayment.order_id !== payment.providerOrderId) {
+    throw new Error("PAYMENT_ORDER_MISMATCH");
   }
 
   /*
@@ -370,13 +309,8 @@ export async function verifyRazorpayPayment(
    * =========================================================
    */
 
-  if (
-    razorpayPayment.amount !==
-    expectedAmountInPaise
-  ) {
-    throw new Error(
-      "PAYMENT_AMOUNT_MISMATCH",
-    );
+  if (razorpayPayment.amount !== expectedAmountInPaise) {
+    throw new Error("PAYMENT_AMOUNT_MISMATCH");
   }
 
   /*
@@ -385,13 +319,8 @@ export async function verifyRazorpayPayment(
    * =========================================================
    */
 
-  if (
-    razorpayPayment.currency !==
-    order.currency
-  ) {
-    throw new Error(
-      "PAYMENT_CURRENCY_MISMATCH",
-    );
+  if (razorpayPayment.currency !== order.currency) {
+    throw new Error("PAYMENT_CURRENCY_MISMATCH");
   }
 
   /*
@@ -406,22 +335,12 @@ export async function verifyRazorpayPayment(
    * payments.
    */
 
-  if (
-    razorpayPayment.status !==
-    "captured"
-  ) {
-    if (
-      razorpayPayment.status ===
-      "authorized"
-    ) {
-      throw new Error(
-        "PAYMENT_NOT_CAPTURED",
-      );
+  if (razorpayPayment.status !== "captured") {
+    if (razorpayPayment.status === "authorized") {
+      throw new Error("PAYMENT_NOT_CAPTURED");
     }
 
-    throw new Error(
-      "PAYMENT_VERIFICATION_FAILED",
-    );
+    throw new Error("PAYMENT_VERIFICATION_FAILED");
   }
 
   /*
@@ -430,87 +349,126 @@ export async function verifyRazorpayPayment(
    * =========================================================
    */
 
-  const updatedPayment =
-    await prisma.$transaction(
-      async (tx) => {
-        const currentPayment =
-          await tx.payment.findUnique({
-            where: {
-              id: payment.id,
-            },
-          });
+  const updatedPayment = await prisma.$transaction(async (tx) => {
+    const currentPayment = await tx.payment.findUnique({
+      where: {
+        id: payment.id,
+      },
+    });
 
-        if (!currentPayment) {
-          throw new Error(
-            "PAYMENT_NOT_FOUND",
-          );
-        }
+    if (!currentPayment) {
+      throw new Error("PAYMENT_NOT_FOUND");
+    }
 
-        /*
-         * Another request/webhook may have already
-         * completed this payment.
-         */
-        if (
-          currentPayment.status ===
-          PaymentStatus.PAID
-        ) {
-          return currentPayment;
-        }
+    /*
+     * Another request/webhook may have already
+     * completed this payment.
+     */
+    if (currentPayment.status === PaymentStatus.PAID) {
+      return currentPayment;
+    }
 
-        const updated =
-          await tx.payment.update({
-            where: {
-              id: payment.id,
-            },
-            data: {
-              providerPaymentId:
-                razorpayPaymentId,
+    const updated = await tx.payment.update({
+      where: {
+        id: payment.id,
+      },
+      data: {
+        providerPaymentId: razorpayPaymentId,
 
-              signature:
-                razorpaySignature,
+        signature: razorpaySignature,
 
-              status:
-                PaymentStatus.PAID,
-            },
-          });
+        status: PaymentStatus.PAID,
+      },
+    });
 
-        await tx.order.update({
+    await tx.order.update({
+      where: {
+        id: order.id,
+      },
+      data: {
+        paymentStatus: PaymentStatus.PAID,
+
+        status: OrderStatus.CONFIRMED,
+      },
+    });
+    /* =====================================================
+   REMOVE ONLY PURCHASED ITEMS FROM CART
+===================================================== */
+
+    const cart = await tx.cart.findUnique({
+      where: {
+        userId,
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (cart) {
+      const orderItems = await tx.orderItem.findMany({
+        where: {
+          orderId: order.id,
+        },
+        select: {
+          productId: true,
+          variantId: true,
+          quantity: true,
+        },
+      });
+
+      for (const orderItem of orderItems) {
+        const cartItem = await tx.cartItem.findFirst({
           where: {
-            id: order.id,
+            cartId: cart.id,
+            productId: orderItem.productId,
+            variantId: orderItem.variantId,
           },
-          data: {
-            paymentStatus:
-              PaymentStatus.PAID,
-
-            status:
-              OrderStatus.CONFIRMED,
+          select: {
+            id: true,
+            quantity: true,
           },
         });
 
-        return updated;
-      },
-    );
+        if (!cartItem) {
+          continue;
+        }
+
+        const remainingQuantity = cartItem.quantity - orderItem.quantity;
+
+        if (remainingQuantity > 0) {
+          await tx.cartItem.update({
+            where: {
+              id: cartItem.id,
+            },
+            data: {
+              quantity: remainingQuantity,
+            },
+          });
+        } else {
+          await tx.cartItem.delete({
+            where: {
+              id: cartItem.id,
+            },
+          });
+        }
+      }
+    }
+    return updated;
+  });
 
   return {
     success: true,
     alreadyProcessed:
-      updatedPayment.status ===
-      PaymentStatus.PAID &&
-      payment.status ===
-      PaymentStatus.PAID,
+      updatedPayment.status === PaymentStatus.PAID &&
+      payment.status === PaymentStatus.PAID,
 
     orderId: order.id,
     orderNumber: order.orderNumber,
 
-    paymentId:
-      updatedPayment.id,
+    paymentId: updatedPayment.id,
 
-    razorpayPaymentId:
-      updatedPayment.providerPaymentId,
+    razorpayPaymentId: updatedPayment.providerPaymentId,
 
-    status:
-      updatedPayment.status,
+    status: updatedPayment.status,
   };
 }
-
-
