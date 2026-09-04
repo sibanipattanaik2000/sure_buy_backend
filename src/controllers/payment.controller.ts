@@ -16,10 +16,6 @@ import {
   verifyRazorpayPayment,
 } from "../services/payment.service";
 
-import {
-  releaseOrderStock,
-} from "../services/order.service";
-
 /**
  * Create Razorpay payment order
  *
@@ -398,18 +394,14 @@ export async function razorpayWebhook(
      * PAYMENT FAILED
      * ============================================================
      *
-     * Important:
+     * Only update the payment record here.
      *
-     * Stock was reserved when the order was created.
-     * Therefore a failed online payment must release that stock.
+     * Stock is NOT released from the payment webhook.
+     *
+     * This prevents webhook retries/races from accidentally
+     * incrementing product stock multiple times.
      */
     if (event === "payment.failed") {
-      /**
-       * First mark the payment as failed.
-       *
-       * Do NOT release stock here yet if the order has
-       * already been successfully paid/captured.
-       */
       await prisma.$transaction(
         async (tx) => {
           const currentPayment =
@@ -470,38 +462,10 @@ export async function razorpayWebhook(
         },
       );
 
-      /**
-       * Release reserved stock and cancel the order.
-       *
-       * releaseOrderStock() is idempotent:
-       * if another process already cancelled the
-       * order and released its stock, it will not
-       * release the stock a second time.
-       */
-      try {
-        await releaseOrderStock(
-          payment.orderId,
-        );
-      } catch (releaseError) {
-        console.error(
-          "FAILED TO RELEASE ORDER STOCK:",
-          releaseError,
-        );
-
-        /**
-         * Throwing here is intentional.
-         *
-         * Razorpay receives HTTP 500 and can retry
-         * the webhook instead of silently losing
-         * the stock-release operation.
-         */
-        throw releaseError;
-      }
-
       return res.status(200).json({
         success: true,
         message:
-          "Payment failure processed and stock released",
+          "Payment failure processed",
       });
     }
 
