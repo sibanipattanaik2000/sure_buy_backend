@@ -16,6 +16,10 @@ import {
   verifyRazorpayPayment,
 } from "../services/payment.service";
 
+import {
+  releaseOrderStock,
+} from "../services/order.service";
+
 /**
  * Create Razorpay payment order
  *
@@ -49,8 +53,7 @@ export async function createPaymentOrder(
 
     return res.status(201).json({
       success: true,
-      message:
-        "Razorpay order created successfully",
+      message: "Razorpay order created successfully",
       data: payment,
     });
   } catch (error) {
@@ -70,8 +73,7 @@ export async function createPaymentOrder(
         case "ORDER_ALREADY_PAID":
           return res.status(409).json({
             success: false,
-            message:
-              "Order has already been paid",
+            message: "Order has already been paid",
           });
 
         case "COD_ORDER_CANNOT_USE_RAZORPAY":
@@ -91,8 +93,7 @@ export async function createPaymentOrder(
 
     return res.status(500).json({
       success: false,
-      message:
-        "Unable to create payment order",
+      message: "Unable to create payment order",
     });
   }
 }
@@ -136,24 +137,21 @@ export async function verifyPayment(
     ) {
       return res.status(400).json({
         success: false,
-        message:
-          "Invalid Razorpay payment response",
+        message: "Invalid Razorpay payment response",
       });
     }
 
-    const result =
-      await verifyRazorpayPayment(
-        req.userId,
-        orderId,
-        razorpayPaymentId,
-        razorpayOrderId,
-        razorpaySignature,
-      );
+    const result = await verifyRazorpayPayment(
+      req.userId,
+      orderId,
+      razorpayPaymentId,
+      razorpayOrderId,
+      razorpaySignature,
+    );
 
     return res.status(200).json({
       success: true,
-      message:
-        "Payment verified successfully",
+      message: "Payment verified successfully",
       data: result,
     });
   } catch (error) {
@@ -162,74 +160,73 @@ export async function verifyPayment(
       error,
     );
 
-if (error instanceof Error) {
-  switch (error.message) {
-    case "ORDER_NOT_FOUND":
-      return res.status(404).json({
-        success: false,
-        message: "Order not found",
-      });
+    if (error instanceof Error) {
+      switch (error.message) {
+        case "ORDER_NOT_FOUND":
+          return res.status(404).json({
+            success: false,
+            message: "Order not found",
+          });
 
-    case "PAYMENT_NOT_FOUND":
-      return res.status(404).json({
-        success: false,
-        message: "Payment record not found",
-      });
+        case "PAYMENT_NOT_FOUND":
+          return res.status(404).json({
+            success: false,
+            message: "Payment record not found",
+          });
 
-    case "INVALID_PAYMENT_RESPONSE":
-      return res.status(400).json({
-        success: false,
-        message: "Invalid payment response",
-      });
+        case "INVALID_PAYMENT_RESPONSE":
+          return res.status(400).json({
+            success: false,
+            message: "Invalid payment response",
+          });
 
-    case "INVALID_PAYMENT_SIGNATURE":
-      return res.status(400).json({
-        success: false,
-        message:
-          "Payment signature verification failed",
-      });
+        case "INVALID_PAYMENT_SIGNATURE":
+          return res.status(400).json({
+            success: false,
+            message:
+              "Payment signature verification failed",
+          });
 
-    case "PAYMENT_VERIFICATION_FAILED":
-      return res.status(502).json({
-        success: false,
-        message:
-          "Unable to confirm payment with Razorpay",
-      });
+        case "PAYMENT_VERIFICATION_FAILED":
+          return res.status(502).json({
+            success: false,
+            message:
+              "Unable to confirm payment with Razorpay",
+          });
 
-    case "PAYMENT_ORDER_MISMATCH":
-      return res.status(400).json({
-        success: false,
-        message:
-          "Payment does not belong to this order",
-      });
+        case "PAYMENT_ORDER_MISMATCH":
+          return res.status(400).json({
+            success: false,
+            message:
+              "Payment does not belong to this order",
+          });
 
-    case "PAYMENT_AMOUNT_MISMATCH":
-      return res.status(400).json({
-        success: false,
-        message:
-          "Payment amount does not match the order",
-      });
+        case "PAYMENT_AMOUNT_MISMATCH":
+          return res.status(400).json({
+            success: false,
+            message:
+              "Payment amount does not match the order",
+          });
 
-    case "PAYMENT_CURRENCY_MISMATCH":
-      return res.status(400).json({
-        success: false,
-        message:
-          "Payment currency does not match the order",
-      });
+        case "PAYMENT_CURRENCY_MISMATCH":
+          return res.status(400).json({
+            success: false,
+            message:
+              "Payment currency does not match the order",
+          });
 
-    case "PAYMENT_NOT_CAPTURED":
-      return res.status(409).json({
-        success: false,
-        message:
-          "Payment has not been captured yet",
-      });
-  }
-}
+        case "PAYMENT_NOT_CAPTURED":
+          return res.status(409).json({
+            success: false,
+            message:
+              "Payment has not been captured yet",
+          });
+      }
+    }
 
     return res.status(500).json({
       success: false,
-      message:
-        "Unable to verify payment",
+      message: "Unable to verify payment",
     });
   }
 }
@@ -263,8 +260,7 @@ export async function razorpayWebhook(
     }
 
     /**
-     * The signature MUST be calculated against
-     * the exact raw request body.
+     * Razorpay signs the exact raw request body.
      */
     if (!req.rawBody) {
       console.error(
@@ -287,9 +283,6 @@ export async function razorpayWebhook(
         .update(req.rawBody)
         .digest("hex");
 
-    /**
-     * Constant-time signature comparison.
-     */
     const signatureBuffer =
       Buffer.from(signature);
 
@@ -340,9 +333,7 @@ export async function razorpayWebhook(
     const razorpayPaymentId =
       paymentEntity?.id;
 
-    if (
-      typeof event !== "string"
-    ) {
+    if (typeof event !== "string") {
       return res.status(400).json({
         success: false,
         message:
@@ -351,8 +342,7 @@ export async function razorpayWebhook(
     }
 
     /**
-     * Ignore events that are not relevant to
-     * our payment state machine.
+     * Ignore unrelated Razorpay events.
      */
     if (
       event !== "payment.authorized" &&
@@ -361,14 +351,12 @@ export async function razorpayWebhook(
     ) {
       return res.status(200).json({
         success: true,
-        message:
-          "Webhook acknowledged",
+        message: "Webhook acknowledged",
       });
     }
 
     if (
-      typeof razorpayOrderId !==
-      "string"
+      typeof razorpayOrderId !== "string"
     ) {
       return res.status(400).json({
         success: false,
@@ -378,11 +366,8 @@ export async function razorpayWebhook(
     }
 
     /**
-     * Find the payment that OUR application
-     * created.
-     *
-     * Never create a payment solely because a
-     * webhook contains an unknown provider ID.
+     * Only process payment records that were
+     * created by our own application.
      */
     const payment =
       await prisma.payment.findUnique({
@@ -399,29 +384,34 @@ export async function razorpayWebhook(
       );
 
       /**
-       * Return 200 so Razorpay does not
-       * repeatedly retry an event that doesn't
-       * belong to our application.
+       * Unknown provider orders are acknowledged
+       * so Razorpay does not continuously retry them.
        */
       return res.status(200).json({
         success: true,
-        message:
-          "Webhook acknowledged",
+        message: "Webhook acknowledged",
       });
     }
 
     /**
-     * payment.failed
+     * ============================================================
+     * PAYMENT FAILED
+     * ============================================================
+     *
+     * Important:
+     *
+     * Stock was reserved when the order was created.
+     * Therefore a failed online payment must release that stock.
      */
-    if (
-      event === "payment.failed"
-    ) {
+    if (event === "payment.failed") {
+      /**
+       * First mark the payment as failed.
+       *
+       * Do NOT release stock here yet if the order has
+       * already been successfully paid/captured.
+       */
       await prisma.$transaction(
         async (tx) => {
-          /**
-           * Do not overwrite a successful payment
-           * with a later failure event.
-           */
           const currentPayment =
             await tx.payment.findUnique({
               where: {
@@ -433,6 +423,9 @@ export async function razorpayWebhook(
             return;
           }
 
+          /**
+           * Never downgrade a successful payment.
+           */
           if (
             currentPayment.status ===
               PaymentStatus.PAID ||
@@ -470,29 +463,52 @@ export async function razorpayWebhook(
                   : null,
             },
           });
-
-          await tx.order.update({
-            where: {
-              id: payment.orderId,
-            },
-
-            data: {
-              paymentStatus:
-                PaymentStatus.FAILED,
-            },
-          });
+        },
+        {
+          isolationLevel:
+            "Serializable",
         },
       );
+
+      /**
+       * Release reserved stock and cancel the order.
+       *
+       * releaseOrderStock() is idempotent:
+       * if another process already cancelled the
+       * order and released its stock, it will not
+       * release the stock a second time.
+       */
+      try {
+        await releaseOrderStock(
+          payment.orderId,
+        );
+      } catch (releaseError) {
+        console.error(
+          "FAILED TO RELEASE ORDER STOCK:",
+          releaseError,
+        );
+
+        /**
+         * Throwing here is intentional.
+         *
+         * Razorpay receives HTTP 500 and can retry
+         * the webhook instead of silently losing
+         * the stock-release operation.
+         */
+        throw releaseError;
+      }
 
       return res.status(200).json({
         success: true,
         message:
-          "Payment failure processed",
+          "Payment failure processed and stock released",
       });
     }
 
     /**
-     * payment.authorized / payment.captured
+     * ============================================================
+     * PAYMENT AUTHORIZED / CAPTURED
+     * ============================================================
      */
     await prisma.$transaction(
       async (tx) => {
@@ -508,10 +524,7 @@ export async function razorpayWebhook(
         }
 
         /**
-         * Captured is the final successful
-         * payment state.
-         *
-         * Never downgrade PAID to AUTHORIZED.
+         * Never downgrade PAID or REFUNDED.
          */
         if (
           currentPayment.status ===
@@ -556,14 +569,18 @@ export async function razorpayWebhook(
                 : PaymentStatus.AUTHORIZED,
 
             /**
-             * Only mark the order confirmed
-             * after Razorpay confirms capture.
+             * The order becomes confirmed only
+             * after payment capture.
              */
             status: isCaptured
               ? OrderStatus.CONFIRMED
               : undefined,
           },
         });
+      },
+      {
+        isolationLevel:
+          "Serializable",
       },
     );
 
@@ -579,8 +596,7 @@ export async function razorpayWebhook(
     );
 
     /**
-     * 500 tells Razorpay that processing failed,
-     * allowing Razorpay to retry the webhook.
+     * HTTP 500 tells Razorpay to retry the webhook.
      */
     return res.status(500).json({
       success: false,
