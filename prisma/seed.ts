@@ -23,6 +23,8 @@ const products = [
         storage: "256GB",
         color: "White",
         price: 79900,
+        colorHex: "#F5F5F5",
+
         originalPrice: 89900,
         stock: 100,
       },
@@ -31,6 +33,8 @@ const products = [
         color: "Lavender",
         price: 79900,
         originalPrice: 89900,
+        colorHex: "#D8C7E8",
+
         stock: 100,
       },
     ],
@@ -122,6 +126,7 @@ async function seedProduct(productData: (typeof products)[number]) {
         },
       },
       update: {
+        colorHex: variant.colorHex,
         price: variant.price,
         originalPrice: variant.originalPrice,
         stock: variant.stock,
@@ -130,6 +135,7 @@ async function seedProduct(productData: (typeof products)[number]) {
         productId: createdProduct.id,
         storage: variant.storage,
         color: variant.color,
+        colorHex: variant.colorHex,
         price: variant.price,
         originalPrice: variant.originalPrice,
         stock: variant.stock,

@@ -44,6 +44,7 @@ const cartInclude = {
           id: true,
           storage: true,
           color: true,
+          colorHex: true, // ADD THIS
           price: true,
           originalPrice: true,
           stock: true,
@@ -125,7 +126,7 @@ function serializeCart(cart: CartWithItems) {
             id: item.variant.id,
             storage: item.variant.storage,
             color: item.variant.color,
-
+            colorHex: item.variant.colorHex,
             price: decimalToNumber(item.variant.price),
             originalPrice: decimalToNumber(
               item.variant.originalPrice,
