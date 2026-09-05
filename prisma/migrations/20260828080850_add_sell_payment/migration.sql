@@ -1,4 +1,4 @@
-﻿-- DropIndex
+-- DropIndex
 DROP INDEX "User_role_idx";
 
 -- CreateTable
@@ -38,5 +38,3 @@ CREATE INDEX "SellPayment_provider_idx" ON "SellPayment"("provider");
 
 -- CreateIndex
 CREATE INDEX "SellPayment_createdAt_idx" ON "SellPayment"("createdAt");
-
-

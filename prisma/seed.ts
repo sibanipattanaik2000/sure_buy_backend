@@ -24,14 +24,14 @@ const products = [
         color: "White",
         price: 79900,
         originalPrice: 89900,
-        stock: 10,
+        stock: 100,
       },
       {
         storage: "256GB",
         color: "Lavender",
         price: 79900,
         originalPrice: 89900,
-        stock: 10,
+        stock: 100,
       },
     ],
 
