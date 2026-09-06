@@ -79,6 +79,49 @@ const products = [
       "USB-C charging",
     ],
   },
+  {
+  slug: "apple-iphone-17-pro-max",
+  brand: "Apple",
+  name: "iPhone 17 Pro Max",
+  category: "Smartphones",
+  condition: ProductCondition.EXCELLENT,
+  price: 99900,
+  originalPrice: 109900,
+  warranty: "1 Year Apple Warranty",
+  description:
+    "iPhone 17 Pro Max with premium design, powerful performance, and advanced camera capabilities.",
+  rating: 0,
+  reviewCount: 0,
+  emiFrom: 3499,
+
+  variants: [
+    {
+      storage: "256GB",
+      color: "Orange",
+      colorHex: "#FF7A00",
+      price: 99900,
+      originalPrice: 109900,
+      stock: 100,
+    },
+  ],
+
+  images: [
+    {
+      url: "https://media.phonebhai.com/products/WhatsApp%20Video%202026-09-05%20at%2015.36.34.mp4",
+      altText: "iPhone 17 Pro Max Orange",
+      position: 0,
+      type: "VIDEO" as const,
+      mimeType: "video/mp4",
+    },
+  ],
+
+  highlights: [
+    "Premium Pro Max design",
+    "Advanced camera system",
+    "Powerful performance",
+    "All-day battery life",
+  ],
+},
 ];
 
 async function seedProduct(productData: (typeof products)[number]) {

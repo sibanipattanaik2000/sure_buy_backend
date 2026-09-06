@@ -200,6 +200,7 @@ export async function loginUser(input: LoginInput) {
       phone: true,
       passwordHash: true,
       createdAt: true,
+      role: true,
     },
   });
 
@@ -224,6 +225,7 @@ export async function loginUser(input: LoginInput) {
     email: user.email,
     phone: user.phone,
     createdAt: user.createdAt,
+    role: user.role,
   };
 }
 
@@ -239,6 +241,7 @@ export async function getCurrentUser(userId: string) {
       email: true,
       phone: true,
       createdAt: true,
+      role: true,
     },
   });
 

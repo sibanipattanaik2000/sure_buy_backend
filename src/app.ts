@@ -15,6 +15,8 @@ import sellRoutes from "./routes/sell.routes";
 import paymentRoutes from "./routes/payment.routes";
 import { notFoundHandler, errorHandler } from "./middleware/error.middleware";
 import sellPaymentRoutes from "./routes/sell-payment.routes";
+import adminProductMediaRoutes from "./routes/admin-product-media.routes";
+import adminProductRoutes from "./routes/admin-product.routes";
 const app = express();
 
 /**
@@ -95,7 +97,15 @@ app.get("/api/v1/health", (_req, res) => {
 app.use("/api/v1/auth", authRoutes);
 
 app.use("/api/v1/products", productRoutes);
+app.use(
+  "/api/v1/admin/product-media",
+  adminProductMediaRoutes,
+);
 
+app.use(
+  "/api/v1/admin/products",
+  adminProductRoutes,
+);
 app.use("/api/v1/addresses", addressRoutes);
 
 app.use("/api/v1/cart", cartRoutes);
@@ -108,6 +118,8 @@ app.use(
   "/api/v1/newsletter",
   newsletterRoutes,
 );
+app.use("/api/v1/admin/products", adminProductMediaRoutes);
+
 /**
  * 404 handler
  */
