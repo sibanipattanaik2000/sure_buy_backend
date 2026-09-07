@@ -130,6 +130,13 @@ export async function getProducts(params: GetProductsParams) {
           orderBy: {
             createdAt: "asc",
           },
+          include: {
+            images: {
+              orderBy: {
+                position: "asc",
+              },
+            },
+          },
         },
       },
     }),
@@ -151,9 +158,7 @@ export async function getProducts(params: GetProductsParams) {
     },
   };
 }
-export async function getProductByIdentifier(
-  identifier: string,
-) {
+export async function getProductByIdentifier(identifier: string) {
   const numericId = Number(identifier);
 
   const product = await prisma.product.findFirst({
