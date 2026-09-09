@@ -1,12 +1,6 @@
-import type {
-  Request,
-  Response,
-  NextFunction,
-} from "express";
+import type { Request, Response, NextFunction } from "express";
 
-import {
-  ProductCondition,
-} from "@prisma/client";
+import { ProductCondition } from "@prisma/client";
 
 import {
   createAdminProduct,
@@ -23,9 +17,7 @@ import {
  * HELPERS
  * ========================================================= */
 
-function parseProductId(
-  value: string | string[] | undefined,
-): number {
+function parseProductId(value: string | string[] | undefined): number {
   if (typeof value !== "string" || !value.trim()) {
     throw new Error("Invalid product id");
   }
@@ -39,9 +31,7 @@ function parseProductId(
   return id;
 }
 
-function getErrorCode(
-  error: unknown,
-) {
+function getErrorCode(error: unknown) {
   if (
     error &&
     typeof error === "object" &&
@@ -54,9 +44,7 @@ function getErrorCode(
   return undefined;
 }
 
-function getErrorMessage(
-  error: unknown,
-) {
+function getErrorMessage(error: unknown) {
   return error instanceof Error
     ? error.message
     : "Unable to process product request";
@@ -72,17 +60,12 @@ export async function createAdminProductController(
   next: NextFunction,
 ) {
   try {
-    const body =
-      req.body as CreateAdminProductInput;
+    const body = req.body as CreateAdminProductInput;
 
-    if (
-      !body ||
-      typeof body !== "object"
-    ) {
+    if (!body || typeof body !== "object") {
       return res.status(400).json({
         success: false,
-        message:
-          "Product data is required",
+        message: "Product data is required",
       });
     }
 
@@ -101,45 +84,29 @@ export async function createAdminProductController(
       });
     }
 
-    if (
-      !Object.values(
-        ProductCondition,
-      ).includes(body.condition)
-    ) {
+    if (!Object.values(ProductCondition).includes(body.condition)) {
       return res.status(400).json({
         success: false,
-        message:
-          "Invalid product condition",
+        message: "Invalid product condition",
       });
     }
 
-    if (
-      !Array.isArray(
-        body.variants,
-      ) ||
-      body.variants.length === 0
-    ) {
+    if (!Array.isArray(body.variants) || body.variants.length === 0) {
       return res.status(400).json({
         success: false,
-        message:
-          "At least one product variant is required",
+        message: "At least one product variant is required",
       });
     }
 
-    const product =
-      await createAdminProduct(body);
+    const product = await createAdminProduct(body);
 
     return res.status(201).json({
       success: true,
-      message:
-        "Product created successfully",
+      message: "Product created successfully",
       data: product,
     });
   } catch (error) {
-    console.error(
-      "CREATE ADMIN PRODUCT ERROR:",
-      error,
-    );
+    console.error("CREATE ADMIN PRODUCT ERROR:", error);
 
     return next(error);
   }
@@ -155,43 +122,30 @@ export async function getAdminProductsController(
   next: NextFunction,
 ) {
   try {
-    const page = Number(
-      req.query.page ?? 1,
-    );
+    const page = Number(req.query.page ?? 1);
 
-    const limit = Number(
-      req.query.limit ?? 20,
-    );
+    const limit = Number(req.query.limit ?? 20);
 
-    const search =
-      typeof req.query.search ===
-      "string"
-        ? req.query.search
-        : "";
+    const search = typeof req.query.search === "string" ? req.query.search : "";
 
-    const includeInactive =
-      req.query.includeInactive !==
-      "false";
+    const includeInactive = req.query.includeInactive !== "false";
 
-    const result =
-      await getAdminProducts({
-        page,
-        limit,
-        search,
-        includeInactive,
-      });
+    const result = await getAdminProducts({
+      page,
+      limit,
+      search,
+      includeInactive,
+    });
 
     return res.status(200).json({
       success: true,
-      data: result.products,
-      pagination:
-        result.pagination,
+      data: {
+        products: result.products,
+        pagination: result.pagination,
+      },
     });
   } catch (error) {
-    console.error(
-      "GET ADMIN PRODUCTS ERROR:",
-      error,
-    );
+    console.error("GET ADMIN PRODUCTS ERROR:", error);
 
     return next(error);
   }
@@ -207,47 +161,32 @@ export async function getAdminProductController(
   next: NextFunction,
 ) {
   try {
-    const productId =
-      parseProductId(
-        req.params.id,
-      );
+    const productId = parseProductId(req.params.id);
 
     if (!productId) {
       return res.status(400).json({
         success: false,
-        message:
-          "Invalid product id",
+        message: "Invalid product id",
       });
     }
 
-    const product =
-      await getAdminProduct(
-        productId,
-      );
+    const product = await getAdminProduct(productId);
 
     return res.status(200).json({
       success: true,
       data: product,
     });
   } catch (error) {
-    const code =
-      getErrorCode(error);
+    const code = getErrorCode(error);
 
-    if (
-      code ===
-      "PRODUCT_NOT_FOUND"
-    ) {
+    if (code === "PRODUCT_NOT_FOUND") {
       return res.status(404).json({
         success: false,
-        message:
-          getErrorMessage(error),
+        message: getErrorMessage(error),
       });
     }
 
-    console.error(
-      "GET ADMIN PRODUCT ERROR:",
-      error,
-    );
+    console.error("GET ADMIN PRODUCT ERROR:", error);
 
     return next(error);
   }
@@ -263,89 +202,56 @@ export async function updateAdminProductController(
   next: NextFunction,
 ) {
   try {
-    const productId =
-      parseProductId(
-        req.params.id,
-      );
+    const productId = parseProductId(req.params.id);
 
     if (!productId) {
       return res.status(400).json({
         success: false,
-        message:
-          "Invalid product id",
+        message: "Invalid product id",
       });
     }
 
-    const body =
-      req.body as UpdateAdminProductInput;
+    const body = req.body as UpdateAdminProductInput;
 
-    if (
-      !Object.values(
-        ProductCondition,
-      ).includes(body.condition)
-    ) {
+    if (!Object.values(ProductCondition).includes(body.condition)) {
       return res.status(400).json({
         success: false,
-        message:
-          "Invalid product condition",
+        message: "Invalid product condition",
       });
     }
 
-    const product =
-      await updateAdminProduct(
-        productId,
-        body,
-      );
+    const product = await updateAdminProduct(productId, body);
 
     return res.status(200).json({
       success: true,
-      message:
-        "Product updated successfully",
+      message: "Product updated successfully",
       data: product,
     });
   } catch (error) {
-    const code =
-      getErrorCode(error);
+    const code = getErrorCode(error);
 
-    if (
-      code ===
-      "PRODUCT_NOT_FOUND"
-    ) {
+    if (code === "PRODUCT_NOT_FOUND") {
       return res.status(404).json({
         success: false,
-        message:
-          getErrorMessage(error),
+        message: getErrorMessage(error),
       });
     }
 
-    if (
-      code ===
-      "DUPLICATE_SLUG"
-    ) {
+    if (code === "DUPLICATE_SLUG") {
       return res.status(409).json({
         success: false,
-        message:
-          getErrorMessage(error),
+        message: getErrorMessage(error),
       });
     }
 
-    if (
-      code ===
-        "INVALID_PRODUCT_DATA" ||
-      code ===
-        "INVALID_STATUS"
-    ) {
+    if (code === "INVALID_PRODUCT_DATA" || code === "INVALID_STATUS") {
       return res.status(400).json({
         success: false,
-        message:
-          getErrorMessage(error),
+        message: getErrorMessage(error),
       });
     }
 
-    console.error(
-      "UPDATE ADMIN PRODUCT ERROR:",
-      error,
-    );
+    console.error("UPDATE ADMIN PRODUCT ERROR:", error);
 
     return next(error);
   }
@@ -361,40 +267,27 @@ export async function updateAdminProductStatusController(
   next: NextFunction,
 ) {
   try {
-    const productId =
-      parseProductId(
-        req.params.id,
-      );
+    const productId = parseProductId(req.params.id);
 
     if (!productId) {
       return res.status(400).json({
         success: false,
-        message:
-          "Invalid product id",
+        message: "Invalid product id",
       });
     }
 
-    const {
-      active,
-    } = req.body as {
+    const { active } = req.body as {
       active?: unknown;
     };
 
-    if (
-      typeof active !== "boolean"
-    ) {
+    if (typeof active !== "boolean") {
       return res.status(400).json({
         success: false,
-        message:
-          "active must be a boolean",
+        message: "active must be a boolean",
       });
     }
 
-    const product =
-      await updateAdminProductStatus(
-        productId,
-        active,
-      );
+    const product = await updateAdminProductStatus(productId, active);
 
     return res.status(200).json({
       success: true,
@@ -404,17 +297,12 @@ export async function updateAdminProductStatusController(
       data: product,
     });
   } catch (error) {
-    const code =
-      getErrorCode(error);
+    const code = getErrorCode(error);
 
-    if (
-      code ===
-      "PRODUCT_NOT_FOUND"
-    ) {
+    if (code === "PRODUCT_NOT_FOUND") {
       return res.status(404).json({
         success: false,
-        message:
-          getErrorMessage(error),
+        message: getErrorMessage(error),
       });
     }
 
@@ -432,60 +320,40 @@ export async function deleteAdminProductController(
   next: NextFunction,
 ) {
   try {
-    const productId =
-      parseProductId(
-        req.params.id,
-      );
+    const productId = parseProductId(req.params.id);
 
     if (!productId) {
       return res.status(400).json({
         success: false,
-        message:
-          "Invalid product id",
+        message: "Invalid product id",
       });
     }
 
-    const deleted =
-      await deleteAdminProduct(
-        productId,
-      );
+    const deleted = await deleteAdminProduct(productId);
 
     return res.status(200).json({
       success: true,
-      message:
-        "Product deleted permanently",
+      message: "Product deleted permanently",
       data: deleted,
     });
   } catch (error) {
-    const code =
-      getErrorCode(error);
+    const code = getErrorCode(error);
 
-    if (
-      code ===
-      "PRODUCT_NOT_FOUND"
-    ) {
+    if (code === "PRODUCT_NOT_FOUND") {
       return res.status(404).json({
         success: false,
-        message:
-          getErrorMessage(error),
+        message: getErrorMessage(error),
       });
     }
 
-    if (
-      code ===
-      "PRODUCT_DELETE_BLOCKED"
-    ) {
+    if (code === "PRODUCT_DELETE_BLOCKED") {
       return res.status(409).json({
         success: false,
-        message:
-          getErrorMessage(error),
+        message: getErrorMessage(error),
       });
     }
 
-    console.error(
-      "DELETE ADMIN PRODUCT ERROR:",
-      error,
-    );
+    console.error("DELETE ADMIN PRODUCT ERROR:", error);
 
     return next(error);
   }

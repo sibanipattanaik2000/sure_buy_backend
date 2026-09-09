@@ -378,10 +378,7 @@ export type UpdateAdminProductInput = {
   }>;
 };
 
-function createServiceError(
-  message: string,
-  code: string,
-) {
+function createServiceError(message: string, code: string) {
   const error = new Error(message) as Error & {
     code?: string;
   };
@@ -398,31 +395,18 @@ function createServiceError(
  * Supports search + pagination.
  * ========================================================= */
 
-export async function getAdminProducts(
-  input: AdminProductListInput = {},
-) {
-  const page = Math.max(
-    1,
-    Number(input.page) || 1,
-  );
+export async function getAdminProducts(input: AdminProductListInput = {}) {
+  const page = Math.max(1, Number(input.page) || 1);
 
-  const limit = Math.min(
-    100,
-    Math.max(
-      1,
-      Number(input.limit) || 20,
-    ),
-  );
+  const limit = Math.min(100, Math.max(1, Number(input.limit) || 20));
 
-  const search =
-    typeof input.search === "string"
-      ? input.search.trim()
-      : "";
+  const search = typeof input.search === "string" ? input.search.trim() : "";
 
-  const includeInactive =
-    input.includeInactive !== false;
+  const includeInactive = input.includeInactive !== false;
 
   const skip = (page - 1) * limit;
+
+  const searchNumber = Number(search);
 
   const where = {
     ...(includeInactive
@@ -452,52 +436,59 @@ export async function getAdminProducts(
                 mode: "insensitive" as const,
               },
             },
+
+            // Search by Product ID
+            ...(Number.isInteger(searchNumber)
+              ? [
+                  {
+                    id: searchNumber,
+                  },
+                ]
+              : []),
           ],
         }
       : {}),
   };
 
-  const [products, total] =
-    await Promise.all([
-      prisma.product.findMany({
-        where,
-        skip,
-        take: limit,
+  const [products, total] = await Promise.all([
+    prisma.product.findMany({
+      where,
+      skip,
+      take: limit,
 
-        orderBy: {
-          createdAt: "desc",
-        },
+      orderBy: {
+        createdAt: "desc",
+      },
 
-        include: {
-          variants: {
-            orderBy: {
-              id: "asc",
-            },
-          },
-
-          images: {
-            orderBy: {
-              position: "asc",
-            },
-
-            take: 1,
-          },
-
-          highlights: {
-            orderBy: {
-              position: "asc",
-            },
+      include: {
+        variants: {
+          orderBy: {
+            id: "asc",
           },
         },
-      }),
 
-      prisma.product.count({
-        where,
-      }),
-    ]);
+        images: {
+          orderBy: {
+            position: "asc",
+          },
 
-  const totalPages =
-    Math.ceil(total / limit);
+          take: 1,
+        },
+
+        highlights: {
+          orderBy: {
+            position: "asc",
+          },
+        },
+      },
+    }),
+
+    prisma.product.count({
+      where,
+    }),
+  ]);
+
+  const totalPages = Math.ceil(total / limit);
 
   return {
     products,
@@ -508,11 +499,9 @@ export async function getAdminProducts(
       total,
       totalPages,
 
-      hasNextPage:
-        page < totalPages,
+      hasNextPage: page < totalPages,
 
-      hasPreviousPage:
-        page > 1,
+      hasPreviousPage: page > 1,
     },
   };
 }
@@ -521,55 +510,49 @@ export async function getAdminProducts(
  * GET SINGLE ADMIN PRODUCT
  * ========================================================= */
 
-export async function getAdminProduct(
-  productId: number,
-) {
-  const product =
-    await prisma.product.findUnique({
-      where: {
-        id: productId,
-      },
+export async function getAdminProduct(productId: number) {
+  const product = await prisma.product.findUnique({
+    where: {
+      id: productId,
+    },
 
-      include: {
-        variants: {
-          orderBy: {
-            id: "asc",
+    include: {
+      variants: {
+        orderBy: {
+          id: "asc",
+        },
+
+        include: {
+          highlights: {
+            orderBy: {
+              position: "asc",
+            },
           },
 
-          include: {
-            highlights: {
-              orderBy: {
-                position: "asc",
-              },
-            },
-
-            images: {
-              orderBy: {
-                position: "asc",
-              },
+          images: {
+            orderBy: {
+              position: "asc",
             },
           },
         },
+      },
 
-        images: {
-          orderBy: {
-            position: "asc",
-          },
-        },
-
-        highlights: {
-          orderBy: {
-            position: "asc",
-          },
+      images: {
+        orderBy: {
+          position: "asc",
         },
       },
-    });
+
+      highlights: {
+        orderBy: {
+          position: "asc",
+        },
+      },
+    },
+  });
 
   if (!product) {
-    throw createServiceError(
-      "Product not found",
-      "PRODUCT_NOT_FOUND",
-    );
+    throw createServiceError("Product not found", "PRODUCT_NOT_FOUND");
   }
 
   return product;
@@ -579,9 +562,7 @@ export async function getAdminProduct(
  * VALIDATE UPDATE INPUT
  * ========================================================= */
 
-function validateAdminProductUpdate(
-  input: UpdateAdminProductInput,
-) {
+function validateAdminProductUpdate(input: UpdateAdminProductInput) {
   if (!input || typeof input !== "object") {
     throw createServiceError(
       "Product data is required",
@@ -631,47 +612,30 @@ function validateAdminProductUpdate(
     );
   }
 
-  if (
-    !Number.isFinite(input.price) ||
-    input.price < 0
-  ) {
-    throw createServiceError(
-      "Invalid product price",
-      "INVALID_PRODUCT_DATA",
-    );
+  if (!Number.isFinite(input.price) || input.price < 0) {
+    throw createServiceError("Invalid product price", "INVALID_PRODUCT_DATA");
   }
 
-  if (
-    !Number.isFinite(input.originalPrice) ||
-    input.originalPrice < 0
-  ) {
+  if (!Number.isFinite(input.originalPrice) || input.originalPrice < 0) {
     throw createServiceError(
       "Invalid original product price",
       "INVALID_PRODUCT_DATA",
     );
   }
 
-  if (
-    !Array.isArray(input.variants) ||
-    input.variants.length === 0
-  ) {
+  if (!Array.isArray(input.variants) || input.variants.length === 0) {
     throw createServiceError(
       "At least one product variant is required",
       "INVALID_PRODUCT_DATA",
     );
   }
 
-  const variantKeys =
-    new Set<string>();
+  const variantKeys = new Set<string>();
 
-  for (
-    const variant of input.variants
-  ) {
-    const storage =
-      cleanText(variant.storage);
+  for (const variant of input.variants) {
+    const storage = cleanText(variant.storage);
 
-    const color =
-      cleanText(variant.color);
+    const color = cleanText(variant.color);
 
     if (!storage) {
       throw createServiceError(
@@ -687,8 +651,7 @@ function validateAdminProductUpdate(
       );
     }
 
-    const key =
-      `${storage.toLowerCase()}::${color.toLowerCase()}`;
+    const key = `${storage.toLowerCase()}::${color.toLowerCase()}`;
 
     if (variantKeys.has(key)) {
       throw createServiceError(
@@ -699,37 +662,23 @@ function validateAdminProductUpdate(
 
     variantKeys.add(key);
 
-    if (
-      !Number.isFinite(variant.price) ||
-      variant.price < 0
-    ) {
+    if (!Number.isFinite(variant.price) || variant.price < 0) {
       throw createServiceError(
         `Invalid price for ${storage} / ${color}`,
         "INVALID_PRODUCT_DATA",
       );
     }
 
-    if (
-      !Number.isFinite(
-        variant.originalPrice,
-      ) ||
-      variant.originalPrice < 0
-    ) {
+    if (!Number.isFinite(variant.originalPrice) || variant.originalPrice < 0) {
       throw createServiceError(
         `Invalid original price for ${storage} / ${color}`,
         "INVALID_PRODUCT_DATA",
       );
     }
 
-    const stock =
-      variant.stock === undefined
-        ? 0
-        : variant.stock;
+    const stock = variant.stock === undefined ? 0 : variant.stock;
 
-    if (
-      !Number.isInteger(stock) ||
-      stock < 0
-    ) {
+    if (!Number.isInteger(stock) || stock < 0) {
       throw createServiceError(
         `Invalid stock for ${storage} / ${color}`,
         "INVALID_PRODUCT_DATA",
@@ -738,21 +687,12 @@ function validateAdminProductUpdate(
   }
 
   if (input.media) {
-    for (
-      const media of input.media
-    ) {
-      if (
-        media.variantIndex !==
-          undefined &&
-        media.variantIndex !== null
-      ) {
+    for (const media of input.media) {
+      if (media.variantIndex !== undefined && media.variantIndex !== null) {
         if (
-          !Number.isInteger(
-            media.variantIndex,
-          ) ||
+          !Number.isInteger(media.variantIndex) ||
           media.variantIndex < 0 ||
-          media.variantIndex >=
-            input.variants.length
+          media.variantIndex >= input.variants.length
         ) {
           throw createServiceError(
             "Invalid variantIndex in product media",
@@ -768,12 +708,7 @@ function validateAdminProductUpdate(
         );
       }
 
-      if (
-        media.key &&
-        !media.key.startsWith(
-          "products/",
-        )
-      ) {
+      if (media.key && !media.key.startsWith("products/")) {
         throw createServiceError(
           "Invalid product media key",
           "INVALID_PRODUCT_DATA",
@@ -857,10 +792,7 @@ export async function updateAdminProduct(
   });
 
   if (!existingProduct) {
-    throw createServiceError(
-      "Product not found",
-      "PRODUCT_NOT_FOUND",
-    );
+    throw createServiceError("Product not found", "PRODUCT_NOT_FOUND");
   }
 
   /*
@@ -900,28 +832,17 @@ export async function updateAdminProduct(
    */
 
   const existingVariantIds = new Set(
-    existingProduct.variants.map(
-      (variant) => variant.id,
-    ),
+    existingProduct.variants.map((variant) => variant.id),
   );
 
   const submittedExistingVariantIds = new Set<number>();
 
   for (const variant of input.variants) {
-    if (
-      variant.id !== undefined &&
-      variant.id !== null
-    ) {
+    if (variant.id !== undefined && variant.id !== null) {
       const variantId = Number(variant.id);
 
-      if (
-        !Number.isInteger(variantId) ||
-        variantId <= 0
-      ) {
-        throw createServiceError(
-          "Invalid variant id",
-          "INVALID_VARIANT",
-        );
+      if (!Number.isInteger(variantId) || variantId <= 0) {
+        throw createServiceError("Invalid variant id", "INVALID_VARIANT");
       }
 
       if (!existingVariantIds.has(variantId)) {
@@ -931,20 +852,14 @@ export async function updateAdminProduct(
         );
       }
 
-      if (
-        submittedExistingVariantIds.has(
-          variantId,
-        )
-      ) {
+      if (submittedExistingVariantIds.has(variantId)) {
         throw createServiceError(
           `Variant ${variantId} was submitted more than once`,
           "INVALID_VARIANT",
         );
       }
 
-      submittedExistingVariantIds.add(
-        variantId,
-      );
+      submittedExistingVariantIds.add(variantId);
     }
   }
 
@@ -954,616 +869,463 @@ export async function updateAdminProduct(
    * ---------------------------------------------------------
    */
 
-  const updatedProduct = await prisma.$transaction(
-    async (tx) => {
-      /*
-       * -----------------------------------------------------
-       * PRODUCT
-       * -----------------------------------------------------
-       *
-       * IMPORTANT:
-       * Do not default active to true here.
-       *
-       * If an inactive product is edited without active,
-       * it must remain inactive.
-       */
+  const updatedProduct = await prisma.$transaction(async (tx) => {
+    /*
+     * -----------------------------------------------------
+     * PRODUCT
+     * -----------------------------------------------------
+     *
+     * IMPORTANT:
+     * Do not default active to true here.
+     *
+     * If an inactive product is edited without active,
+     * it must remain inactive.
+     */
 
-      const productData: {
-        slug: string;
-        brand: string;
-        name: string;
-        category: string;
-        condition: ProductCondition;
-        price: number;
-        originalPrice: number;
-        warranty: string;
-        description: string;
-        emiFrom?: number | null;
-        active?: boolean;
-      } = {
-        slug,
+    const productData: {
+      slug: string;
+      brand: string;
+      name: string;
+      category: string;
+      condition: ProductCondition;
+      price: number;
+      originalPrice: number;
+      warranty: string;
+      description: string;
+      emiFrom?: number | null;
+      active?: boolean;
+    } = {
+      slug,
 
-        brand: cleanText(input.brand),
+      brand: cleanText(input.brand),
 
-        name: cleanText(input.name),
+      name: cleanText(input.name),
 
-        category: cleanText(input.category),
+      category: cleanText(input.category),
 
-        condition: input.condition,
+      condition: input.condition,
 
-        price: input.price,
+      price: input.price,
 
-        originalPrice: input.originalPrice,
+      originalPrice: input.originalPrice,
 
-        warranty: cleanText(input.warranty),
+      warranty: cleanText(input.warranty),
 
-        description: cleanText(input.description),
-      };
+      description: cleanText(input.description),
+    };
 
-      /*
-       * PATCH semantics:
-       *
-       * undefined = preserve current DB value
-       * null      = explicitly clear nullable value
-       */
+    /*
+     * PATCH semantics:
+     *
+     * undefined = preserve current DB value
+     * null      = explicitly clear nullable value
+     */
 
-      if (input.emiFrom !== undefined) {
-        productData.emiFrom =
-          input.emiFrom;
-      }
+    if (input.emiFrom !== undefined) {
+      productData.emiFrom = input.emiFrom;
+    }
 
-      if (input.active !== undefined) {
-        productData.active =
-          input.active;
-      }
+    if (input.active !== undefined) {
+      productData.active = input.active;
+    }
 
-      await tx.product.update({
+    await tx.product.update({
+      where: {
+        id: productId,
+      },
+
+      data: productData,
+    });
+
+    /*
+     * -----------------------------------------------------
+     * PRODUCT HIGHLIGHTS
+     * -----------------------------------------------------
+     *
+     * Only replace them when the frontend actually sends
+     * highlights.
+     */
+
+    if (input.highlights !== undefined) {
+      await tx.productHighlight.deleteMany({
         where: {
-          id: productId,
+          productId,
         },
-
-        data: productData,
       });
 
-      /*
-       * -----------------------------------------------------
-       * PRODUCT HIGHLIGHTS
-       * -----------------------------------------------------
-       *
-       * Only replace them when the frontend actually sends
-       * highlights.
-       */
+      const highlights = input.highlights
+        .map((text) => text.trim())
+        .filter(Boolean);
 
-      if (input.highlights !== undefined) {
-        await tx.productHighlight.deleteMany({
-          where: {
+      if (highlights.length > 0) {
+        await tx.productHighlight.createMany({
+          data: highlights.map((text, position) => ({
             productId,
-          },
+            text,
+            position,
+          })),
         });
+      }
+    }
 
-        const highlights = input.highlights
-          .map((text) => text.trim())
-          .filter(Boolean);
+    /*
+     * -----------------------------------------------------
+     * VARIANTS
+     * -----------------------------------------------------
+     *
+     * Existing variants:
+     *     UPDATE
+     *
+     * New variants:
+     *     CREATE
+     *
+     * Removed variants:
+     *     DELETE only when unused
+     */
 
-        if (highlights.length > 0) {
-          await tx.productHighlight.createMany({
-            data: highlights.map(
-              (text, position) => ({
-                productId,
-                text,
-                position,
-              }),
-            ),
-          });
-        }
+    for (let index = 0; index < input.variants.length; index++) {
+      const variant = input.variants[index];
+
+      if (!variant) {
+        throw createServiceError(
+          `Variant at index ${index} is missing`,
+          "INVALID_VARIANT",
+        );
       }
 
       /*
-       * -----------------------------------------------------
-       * VARIANTS
-       * -----------------------------------------------------
-       *
-       * Existing variants:
-       *     UPDATE
-       *
-       * New variants:
-       *     CREATE
-       *
-       * Removed variants:
-       *     DELETE only when unused
+       * ---------------------------------------------------
+       * EXISTING VARIANT
+       * ---------------------------------------------------
        */
 
-      for (
-        let index = 0;
-        index < input.variants.length;
-        index++
-      ) {
-        const variant =
-          input.variants[index];
+      if (variant.id !== undefined && variant.id !== null) {
+        const variantId = Number(variant.id);
 
-        if (!variant) {
+        const existingVariant = existingProduct.variants.find(
+          (item) => item.id === variantId,
+        );
+
+        if (!existingVariant) {
           throw createServiceError(
-            `Variant at index ${index} is missing`,
+            `Variant ${variantId} does not belong to this product`,
             "INVALID_VARIANT",
           );
         }
 
+        await tx.productVariant.update({
+          where: {
+            id: variantId,
+          },
+
+          data: {
+            storage: cleanText(variant.storage),
+
+            color: cleanText(variant.color),
+
+            colorHex:
+              variant.colorHex === undefined
+                ? existingVariant.colorHex
+                : variant.colorHex?.trim() || null,
+
+            price: variant.price,
+
+            originalPrice: variant.originalPrice,
+
+            /*
+             * IMPORTANT:
+             * If stock is omitted, preserve the
+             * current stock.
+             */
+            stock:
+              variant.stock === undefined
+                ? existingVariant.stock
+                : variant.stock,
+          },
+        });
+
         /*
-         * ---------------------------------------------------
-         * EXISTING VARIANT
-         * ---------------------------------------------------
+         * Variant highlights
          */
 
-        if (
-          variant.id !== undefined &&
-          variant.id !== null
-        ) {
-          const variantId =
-            Number(variant.id);
-
-          const existingVariant =
-            existingProduct.variants.find(
-              (item) =>
-                item.id === variantId,
-            );
-
-          if (!existingVariant) {
-            throw createServiceError(
-              `Variant ${variantId} does not belong to this product`,
-              "INVALID_VARIANT",
-            );
-          }
-
-          await tx.productVariant.update({
+        if (variant.highlights !== undefined) {
+          await tx.productVariantHighlight.deleteMany({
             where: {
-              id: variantId,
-            },
-
-            data: {
-              storage:
-                cleanText(
-                  variant.storage,
-                ),
-
-              color:
-                cleanText(
-                  variant.color,
-                ),
-
-              colorHex:
-                variant.colorHex ===
-                undefined
-                  ? existingVariant.colorHex
-                  : variant.colorHex
-                      ?.trim() || null,
-
-              price:
-                variant.price,
-
-              originalPrice:
-                variant.originalPrice,
-
-              /*
-               * IMPORTANT:
-               * If stock is omitted, preserve the
-               * current stock.
-               */
-              stock:
-                variant.stock ===
-                undefined
-                  ? existingVariant.stock
-                  : variant.stock,
+              variantId,
             },
           });
 
-          /*
-           * Variant highlights
-           */
-
-          if (
-            variant.highlights !==
-            undefined
-          ) {
-            await tx.productVariantHighlight.deleteMany(
-              {
-                where: {
-                  variantId,
-                },
-              },
-            );
-
-            const variantHighlights =
-              variant.highlights
-                .map((text) =>
-                  text.trim(),
-                )
-                .filter(Boolean);
-
-            if (
-              variantHighlights.length >
-              0
-            ) {
-              await tx.productVariantHighlight.createMany(
-                {
-                  data:
-                    variantHighlights.map(
-                      (
-                        text,
-                        position,
-                      ) => ({
-                        variantId,
-
-                        text,
-
-                        position,
-                      }),
-                    ),
-                },
-              );
-            }
-          }
-
-          continue;
-        }
-
-        /*
-         * ---------------------------------------------------
-         * NEW VARIANT
-         * ---------------------------------------------------
-         */
-
-        const createdVariant =
-          await tx.productVariant.create({
-            data: {
-              productId,
-
-              storage:
-                cleanText(
-                  variant.storage,
-                ),
-
-              color:
-                cleanText(
-                  variant.color,
-                ),
-
-              colorHex:
-                variant.colorHex
-                  ?.trim() || null,
-
-              price:
-                variant.price,
-
-              originalPrice:
-                variant.originalPrice,
-
-              /*
-               * New variants use the same default
-               * as the existing create-product flow.
-               */
-              stock:
-                variant.stock ===
-                undefined
-                  ? 10
-                  : variant.stock,
-            },
-          });
-
-        /*
-         * New variant highlights
-         */
-
-        const variantHighlights =
-          (
-            variant.highlights ??
-            []
-          )
-            .map((text) =>
-              text.trim(),
-            )
+          const variantHighlights = variant.highlights
+            .map((text) => text.trim())
             .filter(Boolean);
 
-        if (
-          variantHighlights.length >
-          0
-        ) {
-          await tx.productVariantHighlight.createMany(
-            {
-              data:
-                variantHighlights.map(
-                  (
-                    text,
-                    position,
-                  ) => ({
-                    variantId:
-                      createdVariant.id,
+          if (variantHighlights.length > 0) {
+            await tx.productVariantHighlight.createMany({
+              data: variantHighlights.map((text, position) => ({
+                variantId,
 
-                    text,
+                text,
 
-                    position,
-                  }),
-                ),
-            },
-          );
-        }
-      }
-
-      /*
-       * -----------------------------------------------------
-       * REMOVE VARIANTS THAT WERE REMOVED FROM THE FORM
-       * -----------------------------------------------------
-       *
-       * This is the critical production-safety section.
-       */
-
-      const variantsToRemove =
-        existingProduct.variants.filter(
-          (variant) =>
-            !submittedExistingVariantIds.has(
-              variant.id,
-            ),
-        );
-
-      for (const variant of variantsToRemove) {
-        /*
-         * Check cart references.
-         */
-
-        const cartItemCount =
-          await tx.cartItem.count({
-            where: {
-              variantId: variant.id,
-            },
-          });
-
-        /*
-         * Check order references.
-         */
-
-        const orderItemCount =
-          await tx.orderItem.count({
-            where: {
-              variantId: variant.id,
-            },
-          });
-
-        if (
-          cartItemCount > 0 ||
-          orderItemCount > 0
-        ) {
-          throw createServiceError(
-            `Variant "${variant.storage} / ${variant.color}" cannot be removed because it is already referenced by customer cart/order history.`,
-            "VARIANT_IN_USE",
-          );
-        }
-
-        /*
-         * Safe to remove.
-         *
-         * Variant highlights and variant images
-         * cascade automatically.
-         */
-
-        await tx.productVariant.delete({
-          where: {
-            id: variant.id,
-          },
-        });
-      }
-
-      /*
-       * -----------------------------------------------------
-       * PRODUCT MEDIA
-       * -----------------------------------------------------
-       *
-       * DB records can be replaced safely.
-       *
-       * IMPORTANT:
-       * The actual R2 objects are NOT deleted here.
-       * R2 cleanup will be handled separately after the
-       * transaction succeeds.
-       */
-
-      if (input.media !== undefined) {
-        await tx.productImage.deleteMany({
-          where: {
-            productId,
-          },
-        });
-
-        if (input.media.length > 0) {
-          /*
-           * At this point variantIndex refers to the
-           * frontend submitted variant array.
-           *
-           * Build a mapping:
-           *
-           * frontend index -> database variant ID
-           */
-
-          const submittedVariantIdMap =
-            new Map<number, number>();
-
-          for (
-            let index = 0;
-            index <
-            input.variants.length;
-            index++
-          ) {
-            const variant =
-              input.variants[index];
-
-            if (
-              !variant
-            ) {
-              continue;
-            }
-
-            if (
-              variant.id !==
-                undefined &&
-              variant.id !== null
-            ) {
-              submittedVariantIdMap.set(
-                index,
-                Number(variant.id),
-              );
-            } else {
-              /*
-               * New variants were created above.
-               *
-               * Find them using storage/color.
-               */
-
-              const createdVariant =
-                await tx.productVariant.findFirst(
-                  {
-                    where: {
-                      productId,
-
-                      storage:
-                        cleanText(
-                          variant.storage,
-                        ),
-
-                      color:
-                        cleanText(
-                          variant.color,
-                        ),
-                    },
-
-                    select: {
-                      id: true,
-                    },
-                  },
-                );
-
-              if (
-                createdVariant
-              ) {
-                submittedVariantIdMap.set(
-                  index,
-                  createdVariant.id,
-                );
-              }
-            }
+                position,
+              })),
+            });
           }
-
-          const mediaData =
-            input.media.map(
-              (
-                media,
-                index,
-              ) => {
-                let variantId:
-                  | number
-                  | null = null;
-
-                if (
-                  media.variantIndex !==
-                    undefined &&
-                  media.variantIndex !==
-                    null
-                ) {
-                  variantId =
-                    submittedVariantIdMap.get(
-                      media.variantIndex,
-                    ) ??
-                    null;
-                }
-
-                return {
-                  productId,
-
-                  variantId,
-
-                  url:
-                    media.url.trim(),
-
-                  key:
-                    media.key
-                      ?.trim() ||
-                    null,
-
-                  altText:
-                    media.altText
-                      ?.trim() ||
-                    null,
-
-                  type:
-                    media.type,
-
-                  mimeType:
-                    media.mimeType
-                      ?.trim() ||
-                    null,
-
-                  size:
-                    media.size ===
-                    undefined
-                      ? null
-                      : media.size,
-
-                  position:
-                    media.position ??
-                    index,
-                };
-              },
-            );
-
-          await tx.productImage.createMany({
-            data: mediaData,
-          });
         }
+
+        continue;
       }
 
       /*
-       * -----------------------------------------------------
-       * RETURN COMPLETE PRODUCT
-       * -----------------------------------------------------
+       * ---------------------------------------------------
+       * NEW VARIANT
+       * ---------------------------------------------------
        */
 
-      return tx.product.findUnique({
-        where: {
-          id: productId,
-        },
+      const createdVariant = await tx.productVariant.create({
+        data: {
+          productId,
 
-        include: {
-          variants: {
-            orderBy: {
-              id: "asc",
-            },
+          storage: cleanText(variant.storage),
 
-            include: {
-              highlights: {
-                orderBy: {
-                  position: "asc",
-                },
-              },
+          color: cleanText(variant.color),
 
-              images: {
-                orderBy: {
-                  position: "asc",
-                },
-              },
-            },
-          },
+          colorHex: variant.colorHex?.trim() || null,
 
-          images: {
-            orderBy: {
-              position: "asc",
-            },
-          },
+          price: variant.price,
 
-          highlights: {
-            orderBy: {
-              position: "asc",
-            },
-          },
+          originalPrice: variant.originalPrice,
+
+          /*
+           * New variants use the same default
+           * as the existing create-product flow.
+           */
+          stock: variant.stock === undefined ? 10 : variant.stock,
         },
       });
-    },
-  );
+
+      /*
+       * New variant highlights
+       */
+
+      const variantHighlights = (variant.highlights ?? [])
+        .map((text) => text.trim())
+        .filter(Boolean);
+
+      if (variantHighlights.length > 0) {
+        await tx.productVariantHighlight.createMany({
+          data: variantHighlights.map((text, position) => ({
+            variantId: createdVariant.id,
+
+            text,
+
+            position,
+          })),
+        });
+      }
+    }
+
+    /*
+     * -----------------------------------------------------
+     * REMOVE VARIANTS THAT WERE REMOVED FROM THE FORM
+     * -----------------------------------------------------
+     *
+     * This is the critical production-safety section.
+     */
+
+    const variantsToRemove = existingProduct.variants.filter(
+      (variant) => !submittedExistingVariantIds.has(variant.id),
+    );
+
+    for (const variant of variantsToRemove) {
+      /*
+       * Check cart references.
+       */
+
+      const cartItemCount = await tx.cartItem.count({
+        where: {
+          variantId: variant.id,
+        },
+      });
+
+      /*
+       * Check order references.
+       */
+
+      const orderItemCount = await tx.orderItem.count({
+        where: {
+          variantId: variant.id,
+        },
+      });
+
+      if (cartItemCount > 0 || orderItemCount > 0) {
+        throw createServiceError(
+          `Variant "${variant.storage} / ${variant.color}" cannot be removed because it is already referenced by customer cart/order history.`,
+          "VARIANT_IN_USE",
+        );
+      }
+
+      /*
+       * Safe to remove.
+       *
+       * Variant highlights and variant images
+       * cascade automatically.
+       */
+
+      await tx.productVariant.delete({
+        where: {
+          id: variant.id,
+        },
+      });
+    }
+
+    /*
+     * -----------------------------------------------------
+     * PRODUCT MEDIA
+     * -----------------------------------------------------
+     *
+     * DB records can be replaced safely.
+     *
+     * IMPORTANT:
+     * The actual R2 objects are NOT deleted here.
+     * R2 cleanup will be handled separately after the
+     * transaction succeeds.
+     */
+
+    if (input.media !== undefined) {
+      await tx.productImage.deleteMany({
+        where: {
+          productId,
+        },
+      });
+
+      if (input.media.length > 0) {
+        /*
+         * At this point variantIndex refers to the
+         * frontend submitted variant array.
+         *
+         * Build a mapping:
+         *
+         * frontend index -> database variant ID
+         */
+
+        const submittedVariantIdMap = new Map<number, number>();
+
+        for (let index = 0; index < input.variants.length; index++) {
+          const variant = input.variants[index];
+
+          if (!variant) {
+            continue;
+          }
+
+          if (variant.id !== undefined && variant.id !== null) {
+            submittedVariantIdMap.set(index, Number(variant.id));
+          } else {
+            /*
+             * New variants were created above.
+             *
+             * Find them using storage/color.
+             */
+
+            const createdVariant = await tx.productVariant.findFirst({
+              where: {
+                productId,
+
+                storage: cleanText(variant.storage),
+
+                color: cleanText(variant.color),
+              },
+
+              select: {
+                id: true,
+              },
+            });
+
+            if (createdVariant) {
+              submittedVariantIdMap.set(index, createdVariant.id);
+            }
+          }
+        }
+
+        const mediaData = input.media.map((media, index) => {
+          let variantId: number | null = null;
+
+          if (media.variantIndex !== undefined && media.variantIndex !== null) {
+            variantId = submittedVariantIdMap.get(media.variantIndex) ?? null;
+          }
+
+          return {
+            productId,
+
+            variantId,
+
+            url: media.url.trim(),
+
+            key: media.key?.trim() || null,
+
+            altText: media.altText?.trim() || null,
+
+            type: media.type,
+
+            mimeType: media.mimeType?.trim() || null,
+
+            size: media.size === undefined ? null : media.size,
+
+            position: media.position ?? index,
+          };
+        });
+
+        await tx.productImage.createMany({
+          data: mediaData,
+        });
+      }
+    }
+
+    /*
+     * -----------------------------------------------------
+     * RETURN COMPLETE PRODUCT
+     * -----------------------------------------------------
+     */
+
+    return tx.product.findUnique({
+      where: {
+        id: productId,
+      },
+
+      include: {
+        variants: {
+          orderBy: {
+            id: "asc",
+          },
+
+          include: {
+            highlights: {
+              orderBy: {
+                position: "asc",
+              },
+            },
+
+            images: {
+              orderBy: {
+                position: "asc",
+              },
+            },
+          },
+        },
+
+        images: {
+          orderBy: {
+            position: "asc",
+          },
+        },
+
+        highlights: {
+          orderBy: {
+            position: "asc",
+          },
+        },
+      },
+    });
+  });
 
   return updatedProduct;
 }
@@ -1578,31 +1340,22 @@ export async function updateAdminProductStatus(
   productId: number,
   active: boolean,
 ) {
-  if (
-    typeof active !== "boolean"
-  ) {
-    throw createServiceError(
-      "active must be a boolean",
-      "INVALID_STATUS",
-    );
+  if (typeof active !== "boolean") {
+    throw createServiceError("active must be a boolean", "INVALID_STATUS");
   }
 
-  const existingProduct =
-    await prisma.product.findUnique({
-      where: {
-        id: productId,
-      },
+  const existingProduct = await prisma.product.findUnique({
+    where: {
+      id: productId,
+    },
 
-      select: {
-        id: true,
-      },
-    });
+    select: {
+      id: true,
+    },
+  });
 
   if (!existingProduct) {
-    throw createServiceError(
-      "Product not found",
-      "PRODUCT_NOT_FOUND",
-    );
+    throw createServiceError("Product not found", "PRODUCT_NOT_FOUND");
   }
 
   return prisma.product.update({
@@ -1637,34 +1390,24 @@ export async function updateAdminProductStatus(
  * are configured with Cascade.
  * ========================================================= */
 
-export async function deleteAdminProduct(
-  productId: number,
-) {
-  const existingProduct =
-    await prisma.product.findUnique({
-      where: {
-        id: productId,
-      },
+export async function deleteAdminProduct(productId: number) {
+  const existingProduct = await prisma.product.findUnique({
+    where: {
+      id: productId,
+    },
 
-      select: {
-        id: true,
-        name: true,
-        slug: true,
-      },
-    });
+    select: {
+      id: true,
+      name: true,
+      slug: true,
+    },
+  });
 
   if (!existingProduct) {
-    throw createServiceError(
-      "Product not found",
-      "PRODUCT_NOT_FOUND",
-    );
+    throw createServiceError("Product not found", "PRODUCT_NOT_FOUND");
   }
 
-  const [
-    cartItems,
-    orderItems,
-    sellRequests,
-  ] = await Promise.all([
+  const [cartItems, orderItems, sellRequests] = await Promise.all([
     prisma.cartItem.count({
       where: {
         productId,
@@ -1687,26 +1430,16 @@ export async function deleteAdminProduct(
   const blockers: string[] = [];
 
   if (cartItems > 0) {
-    blockers.push(
-      `${cartItems} cart item${
-        cartItems === 1 ? "" : "s"
-      }`,
-    );
+    blockers.push(`${cartItems} cart item${cartItems === 1 ? "" : "s"}`);
   }
 
   if (orderItems > 0) {
-    blockers.push(
-      `${orderItems} order item${
-        orderItems === 1 ? "" : "s"
-      }`,
-    );
+    blockers.push(`${orderItems} order item${orderItems === 1 ? "" : "s"}`);
   }
 
   if (sellRequests > 0) {
     blockers.push(
-      `${sellRequests} sell request${
-        sellRequests === 1 ? "" : "s"
-      }`,
+      `${sellRequests} sell request${sellRequests === 1 ? "" : "s"}`,
     );
   }
 
