@@ -203,23 +203,29 @@ export async function getProductByIdentifier(identifier: string) {
         },
       },
 
-      reviews: {
-        orderBy: {
-          createdAt: "desc",
-        },
+ reviews: {
+  orderBy: {
+    createdAt: "desc",
+  },
 
-        take: 20,
+  take: 20,
 
-        include: {
-          user: {
-            select: {
-              id: true,
-              firstName: true,
-              lastName: true,
-            },
-          },
-        },
+  include: {
+    user: {
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
       },
+    },
+
+    media: {
+      orderBy: {
+        position: "asc",
+      },
+    },
+  },
+},
     },
   });
 

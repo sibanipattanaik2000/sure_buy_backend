@@ -5,6 +5,7 @@ import { env } from "../config/env";
 import { prisma } from "../config/prisma";
 
 import {
+  PaymentMethod,
   PaymentStatus,
   OrderStatus,
 } from "@prisma/client";
@@ -526,20 +527,18 @@ export async function razorpayWebhook(
             id: payment.orderId,
           },
 
-          data: {
-            paymentStatus:
-              isCaptured
-                ? PaymentStatus.PAID
-                : PaymentStatus.AUTHORIZED,
+data: {
+  paymentStatus:
+    payment.method === PaymentMethod.COD
+      ? PaymentStatus.PENDING
+      : isCaptured
+        ? PaymentStatus.PAID
+        : PaymentStatus.AUTHORIZED,
 
-            /**
-             * The order becomes confirmed only
-             * after payment capture.
-             */
-            status: isCaptured
-              ? OrderStatus.CONFIRMED
-              : undefined,
-          },
+  status: isCaptured
+    ? OrderStatus.CONFIRMED
+    : undefined,
+},
         });
       },
       {

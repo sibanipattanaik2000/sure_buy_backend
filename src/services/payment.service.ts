@@ -51,9 +51,9 @@ export async function createRazorpayOrder(userId: string, orderId: string) {
     throw new Error("ORDER_ALREADY_PAID");
   }
 
-  if (order.paymentMethod === PaymentMethod.COD) {
-    throw new Error("COD_ORDER_CANNOT_USE_RAZORPAY");
-  }
+  // if (order.paymentMethod === PaymentMethod.COD) {
+  //   throw new Error("COD_ORDER_CANNOT_USE_RAZORPAY");
+  // }
 
   const existingPayment = await prisma.payment.findFirst({
     where: {
@@ -88,7 +88,10 @@ export async function createRazorpayOrder(userId: string, orderId: string) {
     };
   }
 
-  const amount = toNumber(order.totalAmount);
+const amount =
+  order.paymentMethod === PaymentMethod.COD
+    ? 500
+    : toNumber(order.totalAmount);
 
   const razorpayOrder = await razorpay.orders.create({
     amount: toPaise(amount),
@@ -201,9 +204,13 @@ export async function verifyRazorpayPayment(
    * =========================================================
    */
 
-  const expectedAmountInPaise = toPaise(toNumber(order.totalAmount));
+const expectedAmountInPaise = toPaise(
+  toNumber(payment.amount),
+);
 
-  const paymentAmountInPaise = toPaise(toNumber(payment.amount));
+const paymentAmountInPaise = toPaise(
+  toNumber(payment.amount),
+);
 
   if (expectedAmountInPaise !== paymentAmountInPaise) {
     throw new Error("PAYMENT_AMOUNT_MISMATCH");
@@ -381,16 +388,19 @@ export async function verifyRazorpayPayment(
       },
     });
 
-    await tx.order.update({
-      where: {
-        id: order.id,
-      },
-      data: {
-        paymentStatus: PaymentStatus.PAID,
+await tx.order.update({
+  where: {
+    id: order.id,
+  },
+  data: {
+    paymentStatus:
+      payment.method === PaymentMethod.COD
+        ? PaymentStatus.PENDING
+        : PaymentStatus.PAID,
 
-        status: OrderStatus.CONFIRMED,
-      },
-    });
+    status: OrderStatus.CONFIRMED,
+  },
+});
     /* =====================================================
    REMOVE ONLY PURCHASED ITEMS FROM CART
 ===================================================== */

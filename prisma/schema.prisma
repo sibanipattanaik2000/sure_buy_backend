@@ -185,13 +185,33 @@ model Review {
   verifiedPurchase Boolean  @default(false)
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
-  product          Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
-  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  product          Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
+  user             User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  media            ReviewMedia[]
 
   @@unique([productId, userId])
   @@index([productId])
   @@index([userId])
   @@index([createdAt])
+}
+
+model ReviewMedia {
+  id        String    @id @default(cuid())
+  reviewId  Int
+  url       String
+  key       String
+  mimeType  String
+  size      Int
+  type      MediaType @default(IMAGE)
+  position  Int       @default(0)
+  createdAt DateTime  @default(now())
+
+  review Review @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+
+  @@unique([reviewId, key])
+  @@index([reviewId, position])
+  @@index([type])
 }
 
 model Address {
