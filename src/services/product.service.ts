@@ -63,14 +63,17 @@ export async function getProducts(params: GetProductsParams) {
         }
       : {}),
 
-    ...(brand
-      ? {
-          brand: {
-            equals: brand,
-            mode: "insensitive" as const,
-          },
-        }
-      : {}),
+...(brand
+  ? {
+      brand: {
+        in: brand
+          .split(",")
+          .map((item) => item.trim())
+          .filter(Boolean),
+        mode: "insensitive" as const,
+      },
+    }
+  : {}),
 
     ...(condition
       ? {
