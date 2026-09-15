@@ -22,7 +22,33 @@ const ORDER_INCLUDE = {
       storage: true,
       color: true,
       imageUrl: true,
+      variant: {
+        select: {
+          images: {
+            where: {
+              type: "IMAGE",
+            },
+            orderBy: {
+              position: "asc",
+            },
+            take: 1,
+          },
+        },
+      },
 
+      product: {
+        select: {
+          images: {
+            where: {
+              type: "IMAGE",
+            },
+            orderBy: {
+              position: "asc",
+            },
+            take: 1,
+          },
+        },
+      },
       unitPrice: true,
       originalPrice: true,
       quantity: true,
@@ -86,8 +112,12 @@ function serializeOrder(order: OrderWithItems) {
       storage: item.storage,
       color: item.color,
 
-      imageUrl: item.imageUrl,
-
+      imageUrl:
+        item.imageUrl && !/\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(item.imageUrl)
+          ? item.imageUrl
+          : (item.variant?.images[0]?.url ??
+            item.product?.images[0]?.url ??
+            null),
       unitPrice: decimalToNumber(item.unitPrice),
       originalPrice: decimalToNumber(item.originalPrice),
 
@@ -173,6 +203,9 @@ export async function createOrder(userId: string, input: CreateOrderInput) {
               product: {
                 include: {
                   images: {
+                    where: {
+                      type: "IMAGE",
+                    },
                     orderBy: {
                       position: "asc",
                     },
@@ -192,6 +225,9 @@ export async function createOrder(userId: string, input: CreateOrderInput) {
               variant: {
                 include: {
                   images: {
+                    where: {
+                      type: "IMAGE",
+                    },
                     orderBy: {
                       position: "asc",
                     },
