@@ -29,7 +29,25 @@ app.use(helmet());
  */
 app.use(
   cors({
-    origin: env.FRONTEND_URL,
+    origin: (origin, callback) => {
+      const allowedOrigins = [
+        "http://localhost:3000",
+        "https://www.phonebhai.com",
+        "https://phonebhai.com",
+      ];
+
+      // Allow requests without an Origin header
+      // (health checks, server-to-server requests, etc.)
+      if (!origin) {
+        return callback(null, true);
+      }
+
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error("Not allowed by CORS"));
+    },
     credentials: true,
   }),
 );
