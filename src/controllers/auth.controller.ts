@@ -35,10 +35,7 @@ const AUTH_COOKIE_NAME = "phonebhai_access_token";
 const authCookieOptions = {
   httpOnly: true,
   secure: process.env.NODE_ENV === "production",
-  sameSite:
-    process.env.NODE_ENV === "production"
-      ? ("none" as const)
-      : ("lax" as const),
+  sameSite: "lax" as const,
   maxAge: 7 * 24 * 60 * 60 * 1000,
   path: "/",
 };
@@ -136,14 +133,11 @@ export async function login(req: Request, res: Response) {
 
 export async function logout(_req: Request, res: Response) {
   res.clearCookie(AUTH_COOKIE_NAME, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite:
-      process.env.NODE_ENV === "production"
-        ? ("none" as const)
-        : ("lax" as const),
-    path: "/",
-  });
+  httpOnly: true,
+  secure: process.env.NODE_ENV === "production",
+  sameSite: "lax" as const,
+  path: "/",
+});
 
   return res.status(200).json({
     success: true,
