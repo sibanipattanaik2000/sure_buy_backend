@@ -36,8 +36,6 @@ app.use(
         "https://phonebhai.com",
       ];
 
-      // Allow requests without an Origin header
-      // (health checks, server-to-server requests, etc.)
       if (!origin) {
         return callback(null, true);
       }
