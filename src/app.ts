@@ -3,8 +3,8 @@ import cors from "cors";
 import helmet from "helmet";
 import cookieParser from "cookie-parser";
 import rateLimit from "express-rate-limit";
+
 import wishlistRoutes from "./routes/wishlist.routes";
-import { env } from "./config/env";
 import newsletterRoutes from "./routes/newsletter.routes";
 import authRoutes from "./routes/auth.routes";
 import productRoutes from "./routes/product.routes";
@@ -13,34 +13,46 @@ import cartRoutes from "./routes/cart.routes";
 import orderRoutes from "./routes/order.routes";
 import sellRoutes from "./routes/sell.routes";
 import paymentRoutes from "./routes/payment.routes";
-import { notFoundHandler, errorHandler } from "./middleware/error.middleware";
 import sellPaymentRoutes from "./routes/sell-payment.routes";
 import adminProductMediaRoutes from "./routes/admin-product-media.routes";
 import adminProductRoutes from "./routes/admin-product.routes";
+
+import { env } from "./config/env";
+import { notFoundHandler, errorHandler } from "./middleware/error.middleware";
+
 const app = express();
 
-/**
- * Security headers
- */
 app.use(helmet());
 
 /**
  * CORS
+ *
+ * PhoneBhai frontend currently runs on Vercel while the API runs
+ * on api.phonebhai.com, so credentials must be explicitly allowed.
  */
+const allowedOrigins = new Set(
+  [
+    "http://localhost:3000",
+    "https://phone-bhai-web.vercel.app",
+    "https://phonebhai.com",
+    "https://www.phonebhai.com",
+    env.FRONTEND_URL,
+  ]
+    .filter(Boolean)
+    .map((origin) => origin.replace(/\/+$/, "")),
+);
+
 app.use(
   cors({
     origin: (origin, callback) => {
-      const allowedOrigins = [
-        "http://localhost:3000",
-        "https://www.phonebhai.com",
-        "https://phonebhai.com",
-      ];
-
+      // Allow server-to-server requests and requests without an Origin.
       if (!origin) {
         return callback(null, true);
       }
 
-      if (allowedOrigins.includes(origin)) {
+      const normalizedOrigin = origin.replace(/\/+$/, "");
+
+      if (allowedOrigins.has(normalizedOrigin)) {
         return callback(null, true);
       }
 
@@ -50,16 +62,11 @@ app.use(
   }),
 );
 
-/**
- * General API rate limiting
- */
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 300,
-
   standardHeaders: "draft-8",
   legacyHeaders: false,
-
   message: {
     success: false,
     message: "Too many requests. Please try again later.",
@@ -68,32 +75,20 @@ const apiLimiter = rateLimit({
 
 app.use("/api", apiLimiter);
 
-/**
- * Request parsing
- */
 app.use(
   express.json({
     limit: "1mb",
-
     verify: (req, _res, buf) => {
       const request = req as express.Request;
 
-      if (
-        request.originalUrl ===
-        "/api/v1/payments/webhook"
-      ) {
+      if (request.originalUrl === "/api/v1/payments/webhook") {
         request.rawBody = Buffer.from(buf);
       }
     },
   }),
 );
 
-app.use(
-  express.urlencoded({
-    extended: true,
-  }),
-);
-
+app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
 /**
@@ -102,7 +97,7 @@ app.use(cookieParser());
 app.get("/api/v1/health", (_req, res) => {
   return res.status(200).json({
     success: true,
-    message: "Sure-Buy API is running",
+    message: "PhoneBhai API is running",
     environment: env.NODE_ENV,
   });
 });
@@ -111,8 +106,8 @@ app.get("/api/v1/health", (_req, res) => {
  * API routes
  */
 app.use("/api/v1/auth", authRoutes);
-
 app.use("/api/v1/products", productRoutes);
+
 app.use(
   "/api/v1/admin/product-media",
   adminProductMediaRoutes,
@@ -122,28 +117,20 @@ app.use(
   "/api/v1/admin/products",
   adminProductRoutes,
 );
-app.use("/api/v1/addresses", addressRoutes);
 
+app.use("/api/v1/addresses", addressRoutes);
 app.use("/api/v1/cart", cartRoutes);
 app.use("/api/v1/orders", orderRoutes);
 app.use("/api/v1/wishlist", wishlistRoutes);
 app.use("/api/v1/sell", sellRoutes);
 app.use("/api/v1/payments", paymentRoutes);
 app.use("/api/v1/sell/payments", sellPaymentRoutes);
-app.use(
-  "/api/v1/newsletter",
-  newsletterRoutes,
-);
-app.use("/api/v1/admin/products", adminProductMediaRoutes);
+app.use("/api/v1/newsletter", newsletterRoutes);
 
 /**
- * 404 handler
+ * 404 + global error handling
  */
 app.use(notFoundHandler);
-
-/**
- * Global error handler
- */
 app.use(errorHandler);
 
 export default app;

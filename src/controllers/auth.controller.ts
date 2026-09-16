@@ -32,10 +32,14 @@ import { ZodError } from "zod";
 
 const AUTH_COOKIE_NAME = "phonebhai_access_token";
 
+const isProduction = process.env.NODE_ENV === "production";
+
 const authCookieOptions = {
   httpOnly: true,
   secure: process.env.NODE_ENV === "production",
-  sameSite: "lax" as const,
+  sameSite: process.env.NODE_ENV === "production"
+    ? ("none" as const)
+    : ("lax" as const),
   maxAge: 7 * 24 * 60 * 60 * 1000,
   path: "/",
 };
@@ -132,10 +136,10 @@ export async function login(req: Request, res: Response) {
 }
 
 export async function logout(_req: Request, res: Response) {
-  res.clearCookie(AUTH_COOKIE_NAME, {
+res.clearCookie(AUTH_COOKIE_NAME, {
   httpOnly: true,
-  secure: process.env.NODE_ENV === "production",
-  sameSite: "lax" as const,
+  secure: isProduction,
+  sameSite: isProduction ? ("none" as const) : ("lax" as const),
   path: "/",
 });
 
