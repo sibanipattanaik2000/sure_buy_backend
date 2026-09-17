@@ -10,95 +10,31 @@ import {
 
 import { createOrderSchema } from "../validators/order.validator";
 
+
 function handleOrderError(
   error: unknown,
   res: Response,
   operation: string,
 ) {
-  console.error(`${operation}:`, error);
-
-  if (!(error instanceof Error)) {
-    return res.status(500).json({
-      success: false,
-      message: "Something went wrong",
-    });
-  }
-
-  switch (error.message) {
-    case "ADDRESS_NOT_FOUND":
-      return res.status(404).json({
-        success: false,
-        message: "Address not found",
-      });
-
-    case "CART_EMPTY":
-      return res.status(400).json({
-        success: false,
-        message: "Your cart is empty",
-      });
-
-    case "PRODUCT_UNAVAILABLE":
-      return res.status(409).json({
-        success: false,
-        message: "One or more products are no longer available",
-      });
-
-    case "INVALID_CART_QUANTITY":
-      return res.status(400).json({
-        success: false,
-        message: "Invalid cart quantity",
-      });
-
-    case "VARIANT_REQUIRED":
-      return res.status(400).json({
-        success: false,
-        message: "A product variant must be selected",
-      });
-
-    case "VARIANT_INVALID":
-      return res.status(400).json({
-        success: false,
-        message: "Invalid product variant",
-      });
-
-    case "OUT_OF_STOCK":
-      return res.status(409).json({
-        success: false,
-        message: "One or more items are out of stock",
-      });
-
-    case "INSUFFICIENT_STOCK":
-      return res.status(409).json({
-        success: false,
-        message: "Requested quantity is not available",
-      });
-
-    case "ORDER_NOT_FOUND":
-      return res.status(404).json({
-        success: false,
-        message: "Order not found",
-      });
-
-    case "ORDER_CANNOT_BE_CANCELLED":
-      return res.status(409).json({
-        success: false,
-        message: "This order cannot be cancelled",
-      });
-
-    case "ORDER_NUMBER_GENERATION_FAILED":
-      return res.status(500).json({
-        success: false,
-        message: "Unable to generate order number",
-      });
-
-    default:
-      return res.status(500).json({
-        success: false,
-        message: "Something went wrong",
-      });
-  }
+  console.error(`[${operation}]`, {
+    name: error instanceof Error ? error.name : typeof error,
+    message: error instanceof Error ? error.message : error,
+    stack: error instanceof Error ? error.stack : undefined,
+    code:
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error
+        ? (error as { code?: unknown }).code
+        : undefined,
+    meta:
+      typeof error === "object" &&
+      error !== null &&
+      "meta" in error
+        ? (error as { meta?: unknown }).meta
+        : undefined,
+  });
 }
-
+  // keep the rest of your existing function exactly as it is
 export async function createNewOrder(
   req: AuthRequest,
   res: Response,
