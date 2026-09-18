@@ -491,7 +491,9 @@ export async function createOrder(userId: string, input: CreateOrderInput) {
        * Serializable isolation gives the transaction the
        * strongest consistency level supported by PostgreSQL.
        */
-isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,    },
+      isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+      timeout: 15000,
+    },
   );
 }
 
