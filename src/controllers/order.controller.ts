@@ -10,7 +10,6 @@ import {
 
 import { createOrderSchema } from "../validators/order.validator";
 
-
 function handleOrderError(
   error: unknown,
   res: Response,
@@ -33,8 +32,34 @@ function handleOrderError(
         ? (error as { meta?: unknown }).meta
         : undefined,
   });
+
+  const message =
+    error instanceof Error
+      ? error.message
+      : "Internal server error";
+
+  const statusByError: Record<string, number> = {
+    ADDRESS_NOT_FOUND: 404,
+    CART_EMPTY: 400,
+    PRODUCT_UNAVAILABLE: 409,
+    INVALID_CART_QUANTITY: 400,
+    VARIANT_REQUIRED: 400,
+    VARIANT_INVALID: 400,
+    OUT_OF_STOCK: 409,
+    INSUFFICIENT_STOCK: 409,
+    ORDER_NUMBER_GENERATION_FAILED: 500,
+    ORDER_NOT_FOUND: 404,
+    ORDER_CANNOT_BE_CANCELLED: 409,
+  };
+
+  const status = statusByError[message] ?? 500;
+
+  return res.status(status).json({
+    success: false,
+    message,
+  });
 }
-  // keep the rest of your existing function exactly as it is
+
 export async function createNewOrder(
   req: AuthRequest,
   res: Response,
