@@ -1,0 +1,2 @@
+ALTER TABLE "SellPayment"
+ALTER COLUMN "amount" TYPE DECIMAL(15,2);

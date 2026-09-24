@@ -365,6 +365,7 @@ export async function createOrder(userId: string, input: CreateOrderInput) {
           paymentStatus: PaymentStatus.PENDING,
 
           paymentMethod: input.paymentMethod,
+          stockReserved: true,
 
           subtotal,
           deliveryAmount,
@@ -564,20 +565,43 @@ export async function cancelOrder(userId: string, orderId: string) {
       /*
        * Restore stock for variant-based products.
        */
-      for (const item of order.items) {
-        if (item.variantId === null) {
-          continue;
+      /*
+       * Restore stock only if this order still has stock reserved.
+       *
+       * For online payments:
+       * - PENDING payment = stock is still reserved
+       * - FAILED payment = stock was already restored by the
+       *   payment.failed webhook, so DO NOT restore again
+       *
+       * For COD:
+       * - payment remains PENDING until the advance payment flow
+       *   is completed, so cancellation still restores the stock.
+       */
+
+      if (order.stockReserved) {
+        for (const item of order.items) {
+          if (item.variantId === null) {
+            continue;
+          }
+
+          await tx.productVariant.update({
+            where: {
+              id: item.variantId,
+            },
+            data: {
+              stock: {
+                increment: item.quantity,
+              },
+            },
+          });
         }
 
-        await tx.productVariant.update({
+        await tx.order.update({
           where: {
-            id: item.variantId,
+            id: order.id,
           },
-
           data: {
-            stock: {
-              increment: item.quantity,
-            },
+            stockReserved: false,
           },
         });
       }

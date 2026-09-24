@@ -281,6 +281,7 @@ model Order {
   orderNumber          String        @unique
   userId               String
   status               OrderStatus   @default(PENDING)
+  stockReserved        Boolean       @default(false)
   paymentStatus        PaymentStatus @default(PENDING)
   paymentMethod        PaymentMethod
   subtotal             Decimal       @db.Decimal(10, 2)
