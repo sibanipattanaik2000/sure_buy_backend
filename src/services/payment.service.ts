@@ -1,4 +1,5 @@
 import crypto from "crypto";
+
 import {
   PaymentMethod,
   PaymentStatus,
@@ -23,11 +24,388 @@ function toNumber(value: Prisma.Decimal | number): number {
 }
 
 /**
- * Create or reuse a Razorpay order for an existing
- * SureBuy order.
+ * ============================================================
+ * REMOVE PURCHASED CART QUANTITY
+ * ============================================================
+ *
+ * Cart quantity is NOT inventory.
+ *
+ * This is executed only after successful payment processing.
  */
 
-export async function createRazorpayOrder(userId: string, orderId: string) {
+async function removePurchasedCartItems(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  orderId: string,
+) {
+  const cart = await tx.cart.findUnique({
+    where: {
+      userId,
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (!cart) {
+    return;
+  }
+
+  const orderItems = await tx.orderItem.findMany({
+    where: {
+      orderId,
+    },
+    select: {
+      productId: true,
+      variantId: true,
+      quantity: true,
+    },
+  });
+
+  for (const orderItem of orderItems) {
+    const cartItem = await tx.cartItem.findFirst({
+      where: {
+        cartId: cart.id,
+        productId: orderItem.productId,
+        variantId: orderItem.variantId,
+      },
+      select: {
+        id: true,
+        quantity: true,
+      },
+    });
+
+    if (!cartItem) {
+      continue;
+    }
+
+    const remaining =
+      cartItem.quantity - orderItem.quantity;
+
+    if (remaining > 0) {
+      await tx.cartItem.update({
+        where: {
+          id: cartItem.id,
+        },
+        data: {
+          quantity: remaining,
+        },
+      });
+    } else {
+      await tx.cartItem.delete({
+        where: {
+          id: cartItem.id,
+        },
+      });
+    }
+  }
+}
+
+/**
+ * ============================================================
+ * DEDUCT STOCK AFTER SUCCESSFUL PAYMENT
+ * ============================================================
+ *
+ * IMPORTANT:
+ *
+ * This is the ONLY function in the purchase flow that
+ * decreases inventory.
+ *
+ * Stock is NOT deducted:
+ *
+ * - Add to cart
+ * - Update cart
+ * - Create order
+ * - Create Razorpay order
+ * - Payment authorized
+ * - Payment failed
+ * - Payment cancelled
+ *
+ * Stock is deducted ONLY when payment is captured.
+ */
+
+async function deductStockAfterSuccessfulPayment(
+  tx: Prisma.TransactionClient,
+  orderId: string,
+) {
+  const order = await tx.order.findUnique({
+    where: {
+      id: orderId,
+    },
+    select: {
+      id: true,
+      stockReserved: true,
+    },
+  });
+
+  if (!order) {
+    throw new Error("ORDER_NOT_FOUND");
+  }
+
+  /**
+   * Idempotency protection.
+   *
+   * Prevents duplicate stock deduction when:
+   *
+   * - frontend verification runs
+   * - webhook runs
+   * - webhook is retried
+   */
+  if (order.stockReserved) {
+    return;
+  }
+
+  const items = await tx.orderItem.findMany({
+    where: {
+      orderId,
+    },
+    select: {
+      productId: true,
+      variantId: true,
+      quantity: true,
+    },
+  });
+
+  if (items.length === 0) {
+    throw new Error("ORDER_HAS_NO_ITEMS");
+  }
+
+  /**
+   * First validate every item.
+   *
+   * Nothing is changed during this validation phase.
+   */
+  for (const item of items) {
+    if (item.variantId === null) {
+      throw new Error("VARIANT_REQUIRED");
+    }
+
+    const variant = await tx.productVariant.findFirst({
+      where: {
+        id: item.variantId,
+        productId: item.productId,
+      },
+      select: {
+        id: true,
+        stock: true,
+      },
+    });
+
+    if (!variant) {
+      throw new Error("VARIANT_NOT_FOUND");
+    }
+
+    if (variant.stock < item.quantity) {
+      throw new Error("INSUFFICIENT_STOCK_AFTER_PAYMENT");
+    }
+  }
+
+  /**
+   * Now perform atomic deductions.
+   *
+   * The stock >= quantity condition protects against
+   * concurrent purchases.
+   */
+  for (const item of items) {
+    const result = await tx.productVariant.updateMany({
+      where: {
+        id: item.variantId!,
+        productId: item.productId,
+        stock: {
+          gte: item.quantity,
+        },
+      },
+      data: {
+        stock: {
+          decrement: item.quantity,
+        },
+      },
+    });
+
+    if (result.count !== 1) {
+      throw new Error(
+        "INSUFFICIENT_STOCK_AFTER_PAYMENT",
+      );
+    }
+  }
+
+  /**
+   * Mark inventory as consumed.
+   *
+   * Same transaction.
+   */
+  await tx.order.update({
+    where: {
+      id: orderId,
+    },
+    data: {
+      stockReserved: true,
+    },
+  });
+}
+
+/**
+ * ============================================================
+ * PROCESS CAPTURED PAYMENT
+ * ============================================================
+ *
+ * This is the single source of truth for successful payment.
+ *
+ * Called by:
+ *
+ * 1. Frontend Razorpay verification
+ * 2. Razorpay payment.captured webhook
+ */
+
+export async function processCapturedPayment(
+  providerOrderId: string,
+  providerPaymentId: string,
+) {
+  return prisma.$transaction(
+    async (tx) => {
+      const payment = await tx.payment.findUnique({
+        where: {
+          providerOrderId,
+        },
+        include: {
+          order: {
+            select: {
+              id: true,
+              userId: true,
+              orderNumber: true,
+              currency: true,
+              totalAmount: true,
+              paymentStatus: true,
+              status: true,
+              stockReserved: true,
+              paymentMethod: true,
+            },
+          },
+        },
+      });
+
+      if (!payment) {
+        throw new Error("PAYMENT_NOT_FOUND");
+      }
+
+      /**
+       * Already processed.
+       */
+      if (
+        payment.status === PaymentStatus.PAID &&
+        payment.providerPaymentId === providerPaymentId
+      ) {
+        return {
+          success: true,
+          alreadyProcessed: true,
+          orderId: payment.orderId,
+          orderNumber: payment.order.orderNumber,
+          paymentId: payment.id,
+          razorpayPaymentId: providerPaymentId,
+          status: PaymentStatus.PAID,
+        };
+      }
+
+      /**
+       * Order already paid.
+       */
+      if (
+        payment.order.paymentStatus ===
+        PaymentStatus.PAID
+      ) {
+        return {
+          success: true,
+          alreadyProcessed: true,
+          orderId: payment.orderId,
+          orderNumber: payment.order.orderNumber,
+          paymentId: payment.id,
+          razorpayPaymentId: providerPaymentId,
+          status: PaymentStatus.PAID,
+        };
+      }
+
+      /**
+       * ======================================================
+       * STOCK DEDUCTION
+       * ======================================================
+       *
+       * This is the ONLY point where inventory changes.
+       */
+      await deductStockAfterSuccessfulPayment(
+        tx,
+        payment.orderId,
+      );
+
+      /**
+       * Mark payment as PAID.
+       */
+      const updatedPayment =
+        await tx.payment.update({
+          where: {
+            id: payment.id,
+          },
+          data: {
+            providerPaymentId:
+              providerPaymentId,
+            status: PaymentStatus.PAID,
+          },
+        });
+
+      /**
+       * Mark order as confirmed.
+       */
+      await tx.order.update({
+        where: {
+          id: payment.orderId,
+        },
+        data: {
+          paymentStatus:
+            PaymentStatus.PAID,
+          status:
+            OrderStatus.CONFIRMED,
+        },
+      });
+
+      /**
+       * Remove purchased quantity from cart.
+       */
+      await removePurchasedCartItems(
+        tx,
+        payment.order.userId,
+        payment.orderId,
+      );
+
+      return {
+        success: true,
+        alreadyProcessed: false,
+        orderId: payment.orderId,
+        orderNumber: payment.order.orderNumber,
+        paymentId: updatedPayment.id,
+        razorpayPaymentId: providerPaymentId,
+        status: PaymentStatus.PAID,
+      };
+    },
+    {
+      isolationLevel:
+        Prisma.TransactionIsolationLevel.Serializable,
+
+      timeout: 15000,
+    },
+  );
+}
+
+/**
+ * ============================================================
+ * CREATE RAZORPAY ORDER
+ * ============================================================
+ *
+ * NEVER changes inventory.
+ */
+
+export async function createRazorpayOrder(
+  userId: string,
+  orderId: string,
+) {
   const order = await prisma.order.findFirst({
     where: {
       id: orderId,
@@ -40,6 +418,7 @@ export async function createRazorpayOrder(userId: string, orderId: string) {
       currency: true,
       paymentStatus: true,
       paymentMethod: true,
+      status: true,
     },
   });
 
@@ -47,233 +426,124 @@ export async function createRazorpayOrder(userId: string, orderId: string) {
     throw new Error("ORDER_NOT_FOUND");
   }
 
-  if (order.paymentStatus === PaymentStatus.PAID) {
+  if (
+    order.paymentStatus ===
+    PaymentStatus.PAID
+  ) {
     throw new Error("ORDER_ALREADY_PAID");
   }
 
-  const existingPayment = await prisma.payment.findFirst({
-    where: {
-      orderId: order.id,
-      provider: "RAZORPAY",
-      status: {
-        in: [PaymentStatus.PENDING, PaymentStatus.AUTHORIZED],
+  if (
+    order.status ===
+    OrderStatus.CANCELLED
+  ) {
+    throw new Error("ORDER_CANCELLED");
+  }
+
+  /**
+   * Reuse latest pending/authorized payment.
+   *
+   * No stock mutation.
+   */
+  const existingPayment =
+    await prisma.payment.findFirst({
+      where: {
+        orderId: order.id,
+        provider: "RAZORPAY",
+        status: {
+          in: [
+            PaymentStatus.PENDING,
+            PaymentStatus.AUTHORIZED,
+          ],
+        },
+        providerOrderId: {
+          not: null,
+        },
       },
-      providerOrderId: {
-        not: null,
+      orderBy: {
+        createdAt: "desc",
       },
-    },
-    orderBy: {
-      createdAt: "desc",
-    },
-    select: {
-      providerOrderId: true,
-      amount: true,
-      currency: true,
-    },
-  });
+      select: {
+        providerOrderId: true,
+        amount: true,
+        currency: true,
+      },
+    });
 
   if (existingPayment?.providerOrderId) {
     return {
       orderId: order.id,
       orderNumber: order.orderNumber,
-      razorpayOrderId: existingPayment.providerOrderId,
-      amount: toNumber(existingPayment.amount),
-      amountInPaise: toPaise(toNumber(existingPayment.amount)),
+      razorpayOrderId:
+        existingPayment.providerOrderId,
+      amount: toNumber(
+        existingPayment.amount,
+      ),
+      amountInPaise: toPaise(
+        toNumber(
+          existingPayment.amount,
+        ),
+      ),
       currency: existingPayment.currency,
       keyId: env.RAZORPAY_KEY_ID,
     };
   }
 
+  /**
+   * COD = ₹500 advance.
+   *
+   * UPI/Card/EMI = complete order amount.
+   */
   const amount =
     order.paymentMethod === PaymentMethod.COD
       ? 500
       : toNumber(order.totalAmount);
 
-  /*
-   * Tracks whether THIS request reserved stock for a retry.
-   *
-   * This is important because the catch block must only
-   * release stock if this exact request reserved it.
-   */
-  let stockReservedForRetry = false;
-
-  /*
-   * ONLINE PAYMENT RETRY
-   *
-   * If the previous Razorpay payment failed, the
-   * payment.failed webhook already released the stock.
-   *
-   * Reserve the stock again before creating a new
-   * Razorpay payment order.
-   *
-   * COD is excluded because COD stock was already
-   * reserved when the order was created.
-   */
-  if (order.paymentMethod !== PaymentMethod.COD) {
-    const failedPayment = await prisma.payment.findFirst({
-      where: {
-        orderId: order.id,
-        provider: "RAZORPAY",
-        status: PaymentStatus.FAILED,
-      },
-      select: {
-        id: true,
-      },
-    });
-
-    if (failedPayment) {
-      const orderItems = await prisma.orderItem.findMany({
-        where: {
-          orderId: order.id,
-        },
-        select: {
-          productId: true,
-          variantId: true,
-          quantity: true,
-        },
-      });
-
- await prisma.$transaction(
-  async (tx) => {
-    const currentOrder = await tx.order.findUnique({
-      where: {
-        id: order.id,
-      },
-      select: {
-        stockReserved: true,
-      },
-    });
-
-    if (!currentOrder) {
-      throw new Error("ORDER_NOT_FOUND");
-    }
-
-    /*
-     * Another retry request may have already reserved
-     * the stock.
-     */
-    if (currentOrder.stockReserved) {
-      return;
-    }
-
-    for (const item of orderItems) {
-      if (item.variantId === null) {
-        continue;
-      }
-
-      const updatedVariant = await tx.productVariant.updateMany({
-        where: {
-          id: item.variantId,
-          productId: item.productId,
-          stock: {
-            gte: item.quantity,
-          },
-        },
-        data: {
-          stock: {
-            decrement: item.quantity,
-          },
-        },
-      });
-
-      if (updatedVariant.count !== 1) {
-        throw new Error("INSUFFICIENT_STOCK");
-      }
-    }
-
-    await tx.order.update({
-      where: {
-        id: order.id,
-      },
-      data: {
-        stockReserved: true,
-      },
-    });
-  },
-  {
-    isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-  },
-);
-
-stockReservedForRetry = true;
-      /*
-       * Mark the reservation only after the transaction
-       * has successfully committed.
-       */
-      stockReservedForRetry = true;
-    }
+  if (
+    !Number.isFinite(amount) ||
+    amount <= 0
+  ) {
+    throw new Error(
+      "INVALID_PAYMENT_AMOUNT",
+    );
   }
 
-  /*
-   * Create the Razorpay payment order.
-   *
-   * If Razorpay fails after THIS request reserved stock,
-   * release that reservation.
-   */
   let razorpayOrder;
 
   try {
-    razorpayOrder = await razorpay.orders.create({
-      amount: toPaise(amount),
-      currency: order.currency,
-      receipt: order.orderNumber,
-      notes: {
-        orderId: order.id,
-        orderNumber: order.orderNumber,
-        userId,
-      },
-    });
-  } catch (error) {
-    /*
-     * Only release stock when this exact request
-     * performed the retry reservation.
-     */
-    if (stockReservedForRetry) {
-      const orderItems = await prisma.orderItem.findMany({
-        where: {
+    razorpayOrder =
+      await razorpay.orders.create({
+        amount: toPaise(amount),
+        currency: order.currency,
+        receipt: order.orderNumber,
+        notes: {
           orderId: order.id,
-        },
-        select: {
-          variantId: true,
-          quantity: true,
+          orderNumber: order.orderNumber,
+          userId,
+          paymentMethod:
+            order.paymentMethod,
         },
       });
-
-      await prisma.$transaction(
-        async (tx) => {
-          for (const item of orderItems) {
-            if (item.variantId === null) {
-              continue;
-            }
-
-            await tx.productVariant.update({
-              where: {
-                id: item.variantId,
-              },
-              data: {
-                stock: {
-                  increment: item.quantity,
-                },
-              },
-            });
-          }
-        },
-        {
-          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-        },
-      );
-    }
-
-    console.error("RAZORPAY ORDER CREATION ERROR:", error);
+  } catch (error) {
+    console.error(
+      "RAZORPAY ORDER CREATION ERROR:",
+      error,
+    );
 
     throw error;
   }
 
+  /**
+   * Save payment attempt.
+   *
+   * Still NO inventory mutation.
+   */
   await prisma.payment.create({
     data: {
       orderId: order.id,
       provider: "RAZORPAY",
-      providerOrderId: razorpayOrder.id,
+      providerOrderId:
+        razorpayOrder.id,
       amount,
       currency: order.currency,
       status: PaymentStatus.PENDING,
@@ -284,20 +554,35 @@ stockReservedForRetry = true;
   return {
     orderId: order.id,
     orderNumber: order.orderNumber,
-    razorpayOrderId: razorpayOrder.id,
+    razorpayOrderId:
+      razorpayOrder.id,
     amount,
-    amountInPaise: razorpayOrder.amount,
-    currency: razorpayOrder.currency,
-    keyId: env.RAZORPAY_KEY_ID,
+    amountInPaise:
+      razorpayOrder.amount,
+    currency:
+      razorpayOrder.currency,
+    keyId:
+      env.RAZORPAY_KEY_ID,
   };
 }
 
 /**
- * Verify the signature returned by Razorpay Checkout.
+ * ============================================================
+ * VERIFY RAZORPAY PAYMENT
+ * ============================================================
  *
- * IMPORTANT:
- * The order ID used for verification must be the
- * Razorpay order ID that OUR SERVER created.
+ * Browser data is not trusted.
+ *
+ * We verify:
+ *
+ * 1. Checkout signature
+ * 2. Razorpay payment
+ * 3. Razorpay order
+ * 4. Amount
+ * 5. Currency
+ * 6. Payment status
+ *
+ * Inventory is consumed ONLY for captured payment.
  */
 
 export async function verifyRazorpayPayment(
@@ -307,335 +592,212 @@ export async function verifyRazorpayPayment(
   razorpayOrderId: string,
   razorpaySignature: string,
 ) {
-  if (!razorpayPaymentId || !razorpayOrderId || !razorpaySignature) {
-    throw new Error("INVALID_PAYMENT_RESPONSE");
+  if (
+    !razorpayPaymentId ||
+    !razorpayOrderId ||
+    !razorpaySignature
+  ) {
+    throw new Error(
+      "INVALID_PAYMENT_RESPONSE",
+    );
   }
 
-  /*
-   * =========================================================
-   * 1. Find OUR order
-   * =========================================================
-   */
-
-  const order = await prisma.order.findFirst({
-    where: {
-      id: orderId,
-      userId,
-    },
-    select: {
-      id: true,
-      orderNumber: true,
-      totalAmount: true,
-      currency: true,
-      paymentStatus: true,
-    },
-  });
+  const order =
+    await prisma.order.findFirst({
+      where: {
+        id: orderId,
+        userId,
+      },
+      select: {
+        id: true,
+        orderNumber: true,
+        totalAmount: true,
+        currency: true,
+        paymentStatus: true,
+        paymentMethod: true,
+      },
+    });
 
   if (!order) {
     throw new Error("ORDER_NOT_FOUND");
   }
 
-  /*
-   * =========================================================
-   * 2. Find OUR Razorpay payment record
-   * =========================================================
-   */
-
-  const payment = await prisma.payment.findFirst({
-    where: {
-      orderId: order.id,
-      provider: "RAZORPAY",
-      providerOrderId: razorpayOrderId,
-    },
-  });
+  const payment =
+    await prisma.payment.findFirst({
+      where: {
+        orderId: order.id,
+        provider: "RAZORPAY",
+        providerOrderId:
+          razorpayOrderId,
+      },
+    });
 
   if (!payment) {
     throw new Error("PAYMENT_NOT_FOUND");
   }
 
-  /*
-   * =========================================================
-   * 3. Make sure the payment belongs to this order
-   * =========================================================
-   */
-
-  if (payment.orderId !== order.id) {
-    throw new Error("PAYMENT_ORDER_MISMATCH");
+  if (
+    payment.currency !==
+    order.currency
+  ) {
+    throw new Error(
+      "PAYMENT_CURRENCY_MISMATCH",
+    );
   }
 
-  /*
-   * =========================================================
-   * 4. Validate amount
-   * =========================================================
+  /**
+   * Expected amount comes from our DB,
+   * not from the browser.
    */
-  const expectedAmountInPaise = toPaise(toNumber(payment.amount));
+  const expectedAmountInPaise =
+    toPaise(
+      toNumber(payment.amount),
+    );
 
-  if (!Number.isFinite(expectedAmountInPaise) || expectedAmountInPaise <= 0) {
-    throw new Error("PAYMENT_AMOUNT_MISMATCH");
-  }
-  /*
-   * =========================================================
-   * 5. Validate currency
-   * =========================================================
+  /**
+   * Verify Razorpay checkout signature.
    */
+  const expectedSignature =
+    crypto
+      .createHmac(
+        "sha256",
+        env.RAZORPAY_KEY_SECRET,
+      )
+      .update(
+        `${payment.providerOrderId}|${razorpayPaymentId}`,
+      )
+      .digest("hex");
 
-  if (payment.currency !== order.currency) {
-    throw new Error("PAYMENT_CURRENCY_MISMATCH");
-  }
+  const receivedBuffer =
+    Buffer.from(
+      razorpaySignature,
+      "utf8",
+    );
 
-  /*
-   * =========================================================
-   * 6. Idempotency
-   * =========================================================
-   *
-   * If the same successful payment is submitted twice,
-   * return the already processed result instead of
-   * creating another state transition.
-   */
+  const expectedBuffer =
+    Buffer.from(
+      expectedSignature,
+      "utf8",
+    );
 
   if (
-    payment.providerPaymentId === razorpayPaymentId &&
-    payment.status === PaymentStatus.PAID
+    receivedBuffer.length !==
+    expectedBuffer.length
   ) {
-    return {
-      success: true,
-      alreadyProcessed: true,
-      orderId: order.id,
-      orderNumber: order.orderNumber,
-      paymentId: payment.id,
-      razorpayPaymentId,
-      status: PaymentStatus.PAID,
-    };
+    throw new Error(
+      "INVALID_PAYMENT_SIGNATURE",
+    );
   }
 
-  /*
-   * =========================================================
-   * 7. Verify Razorpay Checkout signature
-   * =========================================================
-   *
-   * IMPORTANT:
-   *
-   * The order ID used here is the Razorpay order ID that
-   * OUR DATABASE created.
-   *
-   * Razorpay recommends server-side signature verification.
+  if (
+    !crypto.timingSafeEqual(
+      receivedBuffer,
+      expectedBuffer,
+    )
+  ) {
+    throw new Error(
+      "INVALID_PAYMENT_SIGNATURE",
+    );
+  }
+
+  /**
+   * Fetch authoritative payment from Razorpay.
    */
-
-  const expectedSignature = crypto
-    .createHmac("sha256", env.RAZORPAY_KEY_SECRET)
-    .update(`${payment.providerOrderId}|${razorpayPaymentId}`)
-    .digest("hex");
-
-  const receivedBuffer = Buffer.from(razorpaySignature);
-
-  const expectedBuffer = Buffer.from(expectedSignature);
-
-  if (receivedBuffer.length !== expectedBuffer.length) {
-    throw new Error("INVALID_PAYMENT_SIGNATURE");
-  }
-
-  if (!crypto.timingSafeEqual(receivedBuffer, expectedBuffer)) {
-    throw new Error("INVALID_PAYMENT_SIGNATURE");
-  }
-
-  /*
-   * =========================================================
-   * 8. Ask Razorpay for the REAL payment status
-   * =========================================================
-   *
-   * Never trust the browser to tell us that payment was
-   * captured.
-   */
-
   let razorpayPayment;
 
   try {
-    razorpayPayment = await razorpay.payments.fetch(razorpayPaymentId);
+    razorpayPayment =
+      await razorpay.payments.fetch(
+        razorpayPaymentId,
+      );
   } catch (error) {
-    console.error("RAZORPAY PAYMENT FETCH ERROR:", error);
+    console.error(
+      "RAZORPAY PAYMENT FETCH ERROR:",
+      error,
+    );
 
-    throw new Error("PAYMENT_VERIFICATION_FAILED");
+    throw new Error(
+      "PAYMENT_VERIFICATION_FAILED",
+    );
   }
 
-  /*
-   * =========================================================
-   * 9. Verify provider order ID
-   * =========================================================
+  /**
+   * Verify Razorpay order.
    */
-
-  if (razorpayPayment.order_id !== payment.providerOrderId) {
-    throw new Error("PAYMENT_ORDER_MISMATCH");
+  if (
+    razorpayPayment.order_id !==
+    payment.providerOrderId
+  ) {
+    throw new Error(
+      "PAYMENT_ORDER_MISMATCH",
+    );
   }
 
-  /*
-   * =========================================================
-   * 10. Verify provider amount
-   * =========================================================
+  /**
+   * Verify amount.
    */
-
-  if (razorpayPayment.amount !== expectedAmountInPaise) {
-    throw new Error("PAYMENT_AMOUNT_MISMATCH");
+  if (
+    razorpayPayment.amount !==
+    expectedAmountInPaise
+  ) {
+    throw new Error(
+      "PAYMENT_AMOUNT_MISMATCH",
+    );
   }
 
-  /*
-   * =========================================================
-   * 11. Verify provider currency
-   * =========================================================
+  /**
+   * Verify currency.
    */
-
-  if (razorpayPayment.currency !== order.currency) {
-    throw new Error("PAYMENT_CURRENCY_MISMATCH");
+  if (
+    razorpayPayment.currency !==
+    order.currency
+  ) {
+    throw new Error(
+      "PAYMENT_CURRENCY_MISMATCH",
+    );
   }
 
-  /*
-   * =========================================================
-   * 12. Payment MUST be captured
-   * =========================================================
-   *
-   * Authorized != money successfully captured.
-   *
-   * Your Razorpay account should use automatic capture,
-   * or the backend must explicitly capture authorized
-   * payments.
+  /**
+   * ONLY CAPTURED PAYMENT CAN DEDUCT STOCK.
    */
-
-  if (razorpayPayment.status !== "captured") {
-    if (razorpayPayment.status === "authorized") {
-      throw new Error("PAYMENT_NOT_CAPTURED");
+  if (
+    razorpayPayment.status !==
+    "captured"
+  ) {
+    if (
+      razorpayPayment.status ===
+      "authorized"
+    ) {
+      throw new Error(
+        "PAYMENT_NOT_CAPTURED",
+      );
     }
 
-    throw new Error("PAYMENT_VERIFICATION_FAILED");
+    throw new Error(
+      "PAYMENT_VERIFICATION_FAILED",
+    );
   }
 
-  /*
-   * =========================================================
-   * 13. Persist the verified payment atomically
-   * =========================================================
+  /**
+   * Store provider payment ID/signature.
    */
-
-  const updatedPayment = await prisma.$transaction(async (tx) => {
-    const currentPayment = await tx.payment.findUnique({
-      where: {
-        id: payment.id,
-      },
-    });
-
-    if (!currentPayment) {
-      throw new Error("PAYMENT_NOT_FOUND");
-    }
-
-    /*
-     * Another request/webhook may have already
-     * completed this payment.
-     */
-    if (currentPayment.status === PaymentStatus.PAID) {
-      return currentPayment;
-    }
-
-    const updated = await tx.payment.update({
-      where: {
-        id: payment.id,
-      },
-      data: {
-        providerPaymentId: razorpayPaymentId,
-
-        signature: razorpaySignature,
-
-        status: PaymentStatus.PAID,
-      },
-    });
-
-    await tx.order.update({
-      where: {
-        id: order.id,
-      },
-      data: {
-        paymentStatus:
-          payment.method === PaymentMethod.COD
-            ? PaymentStatus.PENDING
-            : PaymentStatus.PAID,
-
-        status: OrderStatus.CONFIRMED,
-      },
-    });
-    /* =====================================================
-   REMOVE ONLY PURCHASED ITEMS FROM CART
-===================================================== */
-
-    const cart = await tx.cart.findUnique({
-      where: {
-        userId,
-      },
-      select: {
-        id: true,
-      },
-    });
-
-    if (cart) {
-      const orderItems = await tx.orderItem.findMany({
-        where: {
-          orderId: order.id,
-        },
-        select: {
-          productId: true,
-          variantId: true,
-          quantity: true,
-        },
-      });
-
-      for (const orderItem of orderItems) {
-        const cartItem = await tx.cartItem.findFirst({
-          where: {
-            cartId: cart.id,
-            productId: orderItem.productId,
-            variantId: orderItem.variantId,
-          },
-          select: {
-            id: true,
-            quantity: true,
-          },
-        });
-
-        if (!cartItem) {
-          continue;
-        }
-
-        const remainingQuantity = cartItem.quantity - orderItem.quantity;
-
-        if (remainingQuantity > 0) {
-          await tx.cartItem.update({
-            where: {
-              id: cartItem.id,
-            },
-            data: {
-              quantity: remainingQuantity,
-            },
-          });
-        } else {
-          await tx.cartItem.delete({
-            where: {
-              id: cartItem.id,
-            },
-          });
-        }
-      }
-    }
-    return updated;
+  await prisma.payment.update({
+    where: {
+      id: payment.id,
+    },
+    data: {
+      providerPaymentId:
+        razorpayPaymentId,
+      signature:
+        razorpaySignature,
+    },
   });
 
-  return {
-    success: true,
-    alreadyProcessed:
-      updatedPayment.status === PaymentStatus.PAID &&
-      payment.status === PaymentStatus.PAID,
-
-    orderId: order.id,
-    orderNumber: order.orderNumber,
-
-    paymentId: updatedPayment.id,
-
-    razorpayPaymentId: updatedPayment.providerPaymentId,
-
-    status: updatedPayment.status,
-  };
+  /**
+   * This performs the ONLY stock deduction.
+   */
+  return processCapturedPayment(
+    payment.providerOrderId!,
+    razorpayPaymentId,
+  );
 }

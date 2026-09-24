@@ -1,4 +1,9 @@
-import { Prisma, OrderStatus, PaymentStatus } from "@prisma/client";
+import {
+  Prisma,
+  OrderStatus,
+  PaymentStatus,
+} from "@prisma/client";
+
 import { prisma } from "../config/prisma";
 import type { CreateOrderInput } from "../validators/order.validator";
 
@@ -22,6 +27,7 @@ const ORDER_INCLUDE = {
       storage: true,
       color: true,
       imageUrl: true,
+
       variant: {
         select: {
           images: {
@@ -49,6 +55,7 @@ const ORDER_INCLUDE = {
           },
         },
       },
+
       unitPrice: true,
       originalPrice: true,
       quantity: true,
@@ -113,11 +120,13 @@ function serializeOrder(order: OrderWithItems) {
       color: item.color,
 
       imageUrl:
-        item.imageUrl && !/\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(item.imageUrl)
+        item.imageUrl &&
+        !/\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(item.imageUrl)
           ? item.imageUrl
           : (item.variant?.images[0]?.url ??
             item.product?.images[0]?.url ??
             null),
+
       unitPrice: decimalToNumber(item.unitPrice),
       originalPrice: decimalToNumber(item.originalPrice),
 
@@ -135,12 +144,17 @@ function serializeOrder(order: OrderWithItems) {
 function generateOrderNumber(): string {
   const timestamp = Date.now().toString(36).toUpperCase();
 
-  const random = Math.random().toString(36).substring(2, 8).toUpperCase();
+  const random = Math.random()
+    .toString(36)
+    .substring(2, 8)
+    .toUpperCase();
 
-  return `SB-${timestamp}-${random}`;
+  return `PB-${timestamp}-${random}`;
 }
 
-async function createUniqueOrderNumber(tx: TransactionClient): Promise<string> {
+async function createUniqueOrderNumber(
+  tx: TransactionClient,
+): Promise<string> {
   for (let attempt = 0; attempt < 5; attempt++) {
     const orderNumber = generateOrderNumber();
 
@@ -161,17 +175,18 @@ async function createUniqueOrderNumber(tx: TransactionClient): Promise<string> {
   throw new Error("ORDER_NUMBER_GENERATION_FAILED");
 }
 
-export async function createOrder(userId: string, input: CreateOrderInput) {
+export async function createOrder(
+  userId: string,
+  input: CreateOrderInput,
+) {
   return prisma.$transaction(
     async (tx) => {
       /*
-       * 1. Verify that the address belongs to the
-       *    authenticated user.
-       *
-       * We copy the address into the order rather than
-       * storing only addressId. This protects historical
-       * orders if the user later edits/deletes the address.
+       * =====================================================
+       * 1. Validate address ownership
+       * =====================================================
        */
+
       const address = await tx.address.findFirst({
         where: {
           id: input.addressId,
@@ -184,11 +199,11 @@ export async function createOrder(userId: string, input: CreateOrderInput) {
       }
 
       /*
-       * 2. Get the user's cart and all current product data.
-       *
-       * Prices are deliberately read from the database.
-       * Never trust prices sent by the frontend.
+       * =====================================================
+       * 2. Load cart with CURRENT database product data
+       * =====================================================
        */
+
       const cart = await tx.cart.findUnique({
         where: {
           userId,
@@ -245,9 +260,17 @@ export async function createOrder(userId: string, input: CreateOrderInput) {
       }
 
       /*
-       * 3. Validate every cart item before creating
-       *    anything.
+       * =====================================================
+       * 3. Validate cart
+       *
+       * IMPORTANT:
+       *
+       * We CHECK stock here.
+       *
+       * We DO NOT CHANGE stock here.
+       * =====================================================
        */
+
       for (const item of cart.items) {
         if (!item.product.active) {
           throw new Error("PRODUCT_UNAVAILABLE");
@@ -258,254 +281,306 @@ export async function createOrder(userId: string, input: CreateOrderInput) {
         }
 
         /*
-         * If a product has variants, the cart item must
-         * contain a valid variant.
+         * Variant products must always have a valid variant.
          */
-        if (item.product.variants.length > 0 && !item.variant) {
+
+        if (
+          item.product.variants.length > 0 &&
+          !item.variant
+        ) {
           throw new Error("VARIANT_REQUIRED");
         }
 
         if (item.variant) {
-          if (item.variant.productId !== item.productId) {
+          if (
+            item.variant.productId !==
+            item.productId
+          ) {
             throw new Error("VARIANT_INVALID");
           }
+
+          /*
+           * Stock is ONLY read here.
+           *
+           * No decrement.
+           */
 
           if (item.variant.stock <= 0) {
             throw new Error("OUT_OF_STOCK");
           }
 
-          if (item.quantity > item.variant.stock) {
+          if (
+            item.quantity >
+            item.variant.stock
+          ) {
             throw new Error("INSUFFICIENT_STOCK");
           }
         }
       }
 
       /*
-       * 4. Calculate all amounts from current database
-       *    prices.
+       * =====================================================
+       * 4. Calculate order totals from DB prices
+       * =====================================================
        */
+
       let subtotal = 0;
 
-      const orderItems = cart.items.map((item) => {
-        const unitPrice = decimalToNumber(
-          item.variant?.price ?? item.product.price,
-        );
+      const orderItems = cart.items.map(
+        (item) => {
+          const unitPrice =
+            decimalToNumber(
+              item.variant?.price ??
+                item.product.price,
+            );
 
-        const originalPrice = decimalToNumber(
-          item.variant?.originalPrice ?? item.product.originalPrice,
-        );
+          const originalPrice =
+            decimalToNumber(
+              item.variant?.originalPrice ??
+                item.product.originalPrice,
+            );
 
-        const itemSubtotal = Number((unitPrice * item.quantity).toFixed(2));
+          const itemSubtotal = Number(
+            (
+              unitPrice *
+              item.quantity
+            ).toFixed(2),
+          );
 
-        subtotal += itemSubtotal;
+          subtotal += itemSubtotal;
 
-        const imageUrl =
-          item.variant?.images[0]?.url ?? item.product.images[0]?.url ?? null;
+          const imageUrl =
+            item.variant?.images[0]?.url ??
+            item.product.images[0]?.url ??
+            null;
 
-        return {
-          cartItemId: item.id,
+          return {
+            productId:
+              item.productId,
 
-          productId: item.productId,
-          variantId: item.variantId,
+            variantId:
+              item.variantId,
 
-          productName: item.product.name,
-          brand: item.product.brand,
-          category: item.product.category,
-          condition: item.product.condition,
+            productName:
+              item.product.name,
 
-          storage: item.variant?.storage ?? null,
-          color: item.variant?.color ?? null,
+            brand:
+              item.product.brand,
 
-          imageUrl,
+            category:
+              item.product.category,
 
-          unitPrice,
-          originalPrice,
+            condition:
+              item.product.condition,
 
-          quantity: item.quantity,
-          subtotal: itemSubtotal,
-        };
-      });
+            storage:
+              item.variant?.storage ??
+              null,
 
-      subtotal = Number(subtotal.toFixed(2));
+            color:
+              item.variant?.color ??
+              null,
 
-      /*
-       * Delivery and discount are currently zero because
-       * there is no shipping-charge / coupon engine in the
-       * current schema.
-       *
-       * We will add those independently later rather than
-       * hard-coding fake business logic.
-       */
+            imageUrl,
+
+            unitPrice,
+
+            originalPrice,
+
+            quantity:
+              item.quantity,
+
+            subtotal:
+              itemSubtotal,
+          };
+        },
+      );
+
+      subtotal = Number(
+        subtotal.toFixed(2),
+      );
+
       const deliveryAmount = 0;
+
       const discountAmount = 0;
 
       const totalAmount = Number(
-        (subtotal + deliveryAmount - discountAmount).toFixed(2),
+        (
+          subtotal +
+          deliveryAmount -
+          discountAmount
+        ).toFixed(2),
       );
 
       /*
-       * 5. Generate a unique order number.
+       * =====================================================
+       * 5. Generate order number
+       * =====================================================
        */
-      const orderNumber = await createUniqueOrderNumber(tx);
+
+      const orderNumber =
+        await createUniqueOrderNumber(tx);
 
       /*
-       * 6. Create the order and snapshot the shipping
-       *    address.
-       */
-      const order = await tx.order.create({
-        data: {
-          orderNumber,
-
-          userId,
-
-          status:
-            input.paymentMethod === "COD"
-              ? OrderStatus.CONFIRMED
-              : OrderStatus.PENDING,
-          paymentStatus: PaymentStatus.PENDING,
-
-          paymentMethod: input.paymentMethod,
-          stockReserved: true,
-
-          subtotal,
-          deliveryAmount,
-          discountAmount,
-          totalAmount,
-
-          currency: "INR",
-
-          shippingFullName: address.fullName,
-          shippingPhone: address.phone,
-
-          shippingAddressLine1: address.addressLine1,
-
-          shippingAddressLine2: address.addressLine2,
-
-          shippingCity: address.city,
-          shippingState: address.state,
-
-          shippingPostalCode: address.postalCode,
-
-          shippingCountry: address.country,
-
-          shippingLandmark: address.landmark,
-
-          items: {
-            create: orderItems.map((item) => ({
-              productId: item.productId,
-              variantId: item.variantId,
-
-              productName: item.productName,
-              brand: item.brand,
-              category: item.category,
-              condition: item.condition,
-
-              storage: item.storage,
-              color: item.color,
-
-              imageUrl: item.imageUrl,
-
-              unitPrice: item.unitPrice,
-              originalPrice: item.originalPrice,
-
-              quantity: item.quantity,
-              subtotal: item.subtotal,
-            })),
-          },
-        },
-
-        include: ORDER_INCLUDE,
-      });
-
-      /*
-       * 7. Decrease stock atomically.
+       * =====================================================
+       * 6. CREATE ORDER
        *
+       * CRITICAL:
+       *
+       * stockReserved = false
+       *
+       * NO stock mutation happens here.
+       *
+       * COD is ALSO PENDING because COD requires the
+       * ₹500 Razorpay advance in the current frontend.
+       * =====================================================
+       */
+
+      const order =
+        await tx.order.create({
+          data: {
+            orderNumber,
+
+            userId,
+
+            status:
+              OrderStatus.PENDING,
+
+            paymentStatus:
+              PaymentStatus.PENDING,
+
+            paymentMethod:
+              input.paymentMethod,
+
+            stockReserved:
+              false,
+
+            subtotal,
+
+            deliveryAmount,
+
+            discountAmount,
+
+            totalAmount,
+
+            currency: "INR",
+
+            shippingFullName:
+              address.fullName,
+
+            shippingPhone:
+              address.phone,
+
+            shippingAddressLine1:
+              address.addressLine1,
+
+            shippingAddressLine2:
+              address.addressLine2,
+
+            shippingArea:
+              address.landmark,
+
+            shippingCity:
+              address.city,
+
+            shippingState:
+              address.state,
+
+            shippingPostalCode:
+              address.postalCode,
+
+            shippingCountry:
+              address.country,
+
+            shippingLandmark:
+              address.landmark,
+
+            items: {
+              create:
+                orderItems.map(
+                  (item) => ({
+                    productId:
+                      item.productId,
+
+                    variantId:
+                      item.variantId,
+
+                    productName:
+                      item.productName,
+
+                    brand:
+                      item.brand,
+
+                    category:
+                      item.category,
+
+                    condition:
+                      item.condition,
+
+                    storage:
+                      item.storage,
+
+                    color:
+                      item.color,
+
+                    imageUrl:
+                      item.imageUrl,
+
+                    unitPrice:
+                      item.unitPrice,
+
+                    originalPrice:
+                      item.originalPrice,
+
+                    quantity:
+                      item.quantity,
+
+                    subtotal:
+                      item.subtotal,
+                  }),
+                ),
+            },
+          },
+
+          include:
+            ORDER_INCLUDE,
+        });
+
+      /*
+       * =====================================================
        * IMPORTANT:
        *
-       * We do not simply:
+       * THERE IS NO PRODUCTVARIANT.UPDATE HERE.
        *
-       *   stock = stock - quantity
-       *
-       * after reading the stock.
-       *
-       * Instead we require:
-       *
-       *   stock >= requested quantity
-       *
-       * inside the UPDATE itself.
-       *
-       * This protects against overselling when two
-       * customers attempt to buy the final units at
-       * approximately the same time.
+       * Stock remains exactly as it was.
+       * =====================================================
        */
-      for (const item of orderItems) {
-        if (item.variantId === null) {
-          continue;
-        }
-
-        const updatedVariant = await tx.productVariant.updateMany({
-          where: {
-            id: item.variantId,
-
-            productId: item.productId,
-
-            stock: {
-              gte: item.quantity,
-            },
-          },
-
-          data: {
-            stock: {
-              decrement: item.quantity,
-            },
-          },
-        });
-
-        if (updatedVariant.count !== 1) {
-          throw new Error("INSUFFICIENT_STOCK");
-        }
-      }
-
-      /*
-       * COD:
-       * Order is immediately confirmed, so remove the
-       * purchased cart items now.
-       *
-       * ONLINE:
-       * Keep cart items until Razorpay payment is actually
-       * captured. This allows the customer to retry payment
-       * after closing/cancelling Razorpay without getting
-       * "Your cart is empty".
-       */
-      if (input.paymentMethod === "COD") {
-        await tx.cartItem.deleteMany({
-          where: {
-            cartId: cart.id,
-          },
-        });
-      }
 
       return serializeOrder(order);
     },
     {
-      /*
-       * Serializable isolation gives the transaction the
-       * strongest consistency level supported by PostgreSQL.
-       */
-      isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+      isolationLevel:
+        Prisma.TransactionIsolationLevel.ReadCommitted,
+
       timeout: 15000,
     },
   );
 }
 
-export async function getOrderById(userId: string, orderId: string) {
-  const order = await prisma.order.findFirst({
-    where: {
-      id: orderId,
-      userId,
-    },
-    include: ORDER_INCLUDE,
-  });
+export async function getOrderById(
+  userId: string,
+  orderId: string,
+) {
+  const order =
+    await prisma.order.findFirst({
+      where: {
+        id: orderId,
+        userId,
+      },
+
+      include:
+        ORDER_INCLUDE,
+    });
 
   if (!order) {
     throw new Error("ORDER_NOT_FOUND");
@@ -514,73 +589,82 @@ export async function getOrderById(userId: string, orderId: string) {
   return serializeOrder(order);
 }
 
-export async function getUserOrders(userId: string) {
-  const orders = await prisma.order.findMany({
-    where: {
-      userId,
-    },
+export async function getUserOrders(
+  userId: string,
+) {
+  const orders =
+    await prisma.order.findMany({
+      where: {
+        userId,
+      },
 
-    orderBy: {
-      createdAt: "desc",
-    },
+      orderBy: {
+        createdAt: "desc",
+      },
 
-    include: ORDER_INCLUDE,
-  });
+      include:
+        ORDER_INCLUDE,
+    });
 
-  return orders.map(serializeOrder);
+  return orders.map(
+    serializeOrder,
+  );
 }
 
-export async function cancelOrder(userId: string, orderId: string) {
+export async function cancelOrder(
+  userId: string,
+  orderId: string,
+) {
   return prisma.$transaction(
     async (tx) => {
-      const order = await tx.order.findFirst({
-        where: {
-          id: orderId,
-          userId,
-        },
+      const order =
+        await tx.order.findFirst({
+          where: {
+            id: orderId,
+            userId,
+          },
 
-        include: {
-          items: true,
-        },
-      });
+          include: {
+            items: true,
+          },
+        });
 
       if (!order) {
-        throw new Error("ORDER_NOT_FOUND");
+        throw new Error(
+          "ORDER_NOT_FOUND",
+        );
+      }
+
+      const cancellableStatuses:
+        OrderStatus[] = [
+          OrderStatus.PENDING,
+          OrderStatus.CONFIRMED,
+        ];
+
+      if (
+        !cancellableStatuses.includes(
+          order.status,
+        )
+      ) {
+        throw new Error(
+          "ORDER_CANNOT_BE_CANCELLED",
+        );
       }
 
       /*
-       * Only orders that have not progressed into
-       * processing/shipping/delivery can be cancelled
-       * through the customer API.
-       */
-      const cancellableStatuses: OrderStatus[] = [
-        OrderStatus.PENDING,
-        OrderStatus.CONFIRMED,
-      ];
-
-      if (!cancellableStatuses.includes(order.status)) {
-        throw new Error("ORDER_CANNOT_BE_CANCELLED");
-      }
-
-      /*
-       * Restore stock for variant-based products.
-       */
-      /*
-       * Restore stock only if this order still has stock reserved.
+       * Stock should only ever be restored when
+       * stockReserved=true.
        *
-       * For online payments:
-       * - PENDING payment = stock is still reserved
-       * - FAILED payment = stock was already restored by the
-       *   payment.failed webhook, so DO NOT restore again
-       *
-       * For COD:
-       * - payment remains PENDING until the advance payment flow
-       *   is completed, so cancellation still restores the stock.
+       * Since successful payment is the only point
+       * where stock becomes reserved, this prevents
+       * accidental stock increments for unpaid orders.
        */
 
       if (order.stockReserved) {
         for (const item of order.items) {
-          if (item.variantId === null) {
+          if (
+            item.variantId === null
+          ) {
             continue;
           }
 
@@ -588,9 +672,11 @@ export async function cancelOrder(userId: string, orderId: string) {
             where: {
               id: item.variantId,
             },
+
             data: {
               stock: {
-                increment: item.quantity,
+                increment:
+                  item.quantity,
               },
             },
           });
@@ -600,34 +686,44 @@ export async function cancelOrder(userId: string, orderId: string) {
           where: {
             id: order.id,
           },
+
           data: {
-            stockReserved: false,
+            stockReserved:
+              false,
           },
         });
       }
 
       const paymentStatus =
-        order.paymentStatus === PaymentStatus.PAID
+        order.paymentStatus ===
+        PaymentStatus.PAID
           ? PaymentStatus.REFUNDED
           : order.paymentStatus;
 
-      const updatedOrder = await tx.order.update({
-        where: {
-          id: order.id,
-        },
+      const updatedOrder =
+        await tx.order.update({
+          where: {
+            id: order.id,
+          },
 
-        data: {
-          status: OrderStatus.CANCELLED,
-          paymentStatus,
-        },
+          data: {
+            status:
+              OrderStatus.CANCELLED,
 
-        include: ORDER_INCLUDE,
-      });
+            paymentStatus,
+          },
 
-      return serializeOrder(updatedOrder);
+          include:
+            ORDER_INCLUDE,
+        });
+
+      return serializeOrder(
+        updatedOrder,
+      );
     },
     {
-      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      isolationLevel:
+        Prisma.TransactionIsolationLevel.Serializable,
     },
   );
 }
