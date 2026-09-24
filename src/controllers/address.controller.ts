@@ -22,7 +22,7 @@ export async function listAddresses(
     if (!req.userId) {
       return res.status(401).json({
         success: false,
-        message: "Authentication required",
+        message: "Authentication required , Please login to access this resource",
       });
     }
 
@@ -50,7 +50,7 @@ export async function addAddress(
     if (!req.userId) {
       return res.status(401).json({
         success: false,
-        message: "Authentication required",
+        message: "Authentication required , Please login to access this resource",
       });
     }
 
@@ -92,7 +92,7 @@ export async function editAddress(
     if (!req.userId) {
       return res.status(401).json({
         success: false,
-        message: "Authentication required",
+        message: "Authentication required , Please login to access this resource",
       });
     }
 
@@ -151,7 +151,7 @@ export async function removeAddress(
     if (!req.userId) {
       return res.status(401).json({
         success: false,
-        message: "Authentication required",
+        message: "Authentication required , Please login to access this resource",
       });
     }
 
@@ -198,7 +198,7 @@ export async function makeDefaultAddress(
     if (!req.userId) {
       return res.status(401).json({
         success: false,
-        message: "Authentication required",
+        message: "Authentication required , Please login to access this resource",
       });
     }
 

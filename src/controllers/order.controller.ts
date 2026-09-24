@@ -68,7 +68,7 @@ export async function createNewOrder(
     if (!req.userId) {
       return res.status(401).json({
         success: false,
-        message: "Authentication required",
+        message: "Authentication required, Please login to access this resource",
       });
     }
 
@@ -109,7 +109,7 @@ export async function listOrders(
     if (!req.userId) {
       return res.status(401).json({
         success: false,
-        message: "Authentication required",
+        message: "Authentication required, Please login to access this resource",
       });
     }
 
@@ -136,7 +136,7 @@ export async function getSingleOrder(
     if (!req.userId) {
       return res.status(401).json({
         success: false,
-        message: "Authentication required",
+        message: "Authentication required, Please login to access this resource",
       });
     }
 
@@ -175,7 +175,7 @@ export async function cancelExistingOrder(
     if (!req.userId) {
       return res.status(401).json({
         success: false,
-        message: "Authentication required",
+        message: "Authentication required, Please login to access this resource",
       });
     }
 

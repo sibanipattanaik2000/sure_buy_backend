@@ -88,7 +88,7 @@ export async function getCart(
     if (!req.userId) {
       return res.status(401).json({
         success: false,
-        message: "Authentication required",
+        message: "Authentication required, Please login to access this resource",
       });
     }
 
@@ -115,7 +115,7 @@ export async function addCartItem(
     if (!req.userId) {
       return res.status(401).json({
         success: false,
-        message: "Authentication required",
+        message: "Authentication required, Please login to access this resource",
       });
     }
 
@@ -158,7 +158,7 @@ export async function editCartItem(
     if (!req.userId) {
       return res.status(401).json({
         success: false,
-        message: "Authentication required",
+        message: "Authentication required, Please login to access this resource",
       });
     }
 
@@ -211,7 +211,7 @@ export async function deleteCartItem(
     if (!req.userId) {
       return res.status(401).json({
         success: false,
-        message: "Authentication required",
+        message: "Authentication required, Please login to access this resource",
       });
     }
 
@@ -251,7 +251,7 @@ export async function clearCart(
     if (!req.userId) {
       return res.status(401).json({
         success: false,
-        message: "Authentication required",
+        message: "Authentication required, Please login to access this resource",
       });
     }
 
@@ -281,7 +281,7 @@ export async function validateCart(
     if (!req.userId) {
       return res.status(401).json({
         success: false,
-        message: "Authentication required",
+        message: "Authentication required, Please login to access this resource",
       });
     }
 
