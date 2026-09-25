@@ -3,7 +3,9 @@ import {
   OrderStatus,
   PaymentStatus,
 } from "@prisma/client";
-
+import {
+  initiateRazorpayRefund,
+} from "./payment.service";
 import { prisma } from "../config/prisma";
 import type { CreateOrderInput } from "../validators/order.validator";
 
@@ -615,7 +617,24 @@ export async function cancelOrder(
   userId: string,
   orderId: string,
 ) {
-  return prisma.$transaction(
+  /*
+   * Refund information is collected inside the transaction,
+   * but the actual Razorpay API call happens AFTER the
+   * transaction commits.
+   *
+   * This prevents a slow/failed Razorpay request from holding
+   * a PostgreSQL transaction open.
+   */
+  let refundRequired:
+    | {
+        paymentId: string;
+        providerPaymentId: string;
+        amount: number;
+        reason: string;
+      }
+    | undefined;
+
+  const result = await prisma.$transaction(
     async (tx) => {
       const order =
         await tx.order.findFirst({
@@ -623,9 +642,13 @@ export async function cancelOrder(
             id: orderId,
             userId,
           },
-
           include: {
             items: true,
+            payments: {
+              orderBy: {
+                createdAt: "desc",
+              },
+            },
           },
         });
 
@@ -652,12 +675,99 @@ export async function cancelOrder(
       }
 
       /*
-       * Stock should only ever be restored when
-       * stockReserved=true.
+       * =====================================================
+       * FIND THE RELEVANT PAYMENT
+       * =====================================================
        *
-       * Since successful payment is the only point
-       * where stock becomes reserved, this prevents
-       * accidental stock increments for unpaid orders.
+       * The latest payment belonging to this order is used.
+       */
+
+      const payment =
+        order.payments[0] ?? null;
+
+      /*
+       * =====================================================
+       * DETERMINE WHETHER A REAL REFUND IS REQUIRED
+       * =====================================================
+       *
+       * PAID:
+       *   Full payment was captured.
+       *
+       * PARTIALLY_PAID:
+       *   COD ₹500 advance was captured.
+       *
+       * REFUND_PENDING:
+       *   A refund has already been requested.
+       *
+       * REFUNDED:
+       *   Already completely refunded.
+       *
+       * PARTIALLY_REFUNDED:
+       *   Some amount has already been refunded.
+       */
+
+      const paymentNeedsRefund =
+        order.paymentStatus ===
+          PaymentStatus.PAID ||
+        order.paymentStatus ===
+          PaymentStatus.PARTIALLY_PAID;
+
+      const refundAlreadyPending =
+        order.paymentStatus ===
+        PaymentStatus.REFUND_PENDING;
+
+      const alreadyRefunded =
+        order.paymentStatus ===
+          PaymentStatus.REFUNDED ||
+        order.paymentStatus ===
+          PaymentStatus.PARTIALLY_REFUNDED;
+
+      /*
+       * =====================================================
+       * PAID ORDER MUST HAVE A REAL PAYMENT RECORD
+       * =====================================================
+       */
+
+      if (
+        paymentNeedsRefund &&
+        !payment
+      ) {
+        throw new Error(
+          "PAYMENT_RECORD_NOT_FOUND",
+        );
+      }
+
+      /*
+       * =====================================================
+       * PAID ORDER MUST HAVE RAZORPAY PAYMENT ID
+       * =====================================================
+       *
+       * Without providerPaymentId we cannot safely create
+       * a Razorpay refund.
+       *
+       * Therefore DO NOT cancel the order in this situation.
+       */
+
+      if (
+        paymentNeedsRefund &&
+        payment &&
+        !payment.providerPaymentId
+      ) {
+        throw new Error(
+          "RAZORPAY_PAYMENT_ID_NOT_FOUND",
+        );
+      }
+
+      /*
+       * =====================================================
+       * RESTORE STOCK
+       * =====================================================
+       *
+       * Stock is restored ONLY if this order previously
+       * deducted stock.
+       *
+       * stockReserved=true means the payment was successfully
+       * processed and stock was decremented.
        */
 
       if (order.stockReserved) {
@@ -688,17 +798,90 @@ export async function cancelOrder(
           },
 
           data: {
-            stockReserved:
-              false,
+            stockReserved: false,
           },
         });
       }
 
-      const paymentStatus =
-        order.paymentStatus ===
-        PaymentStatus.PAID
-          ? PaymentStatus.REFUNDED
-          : order.paymentStatus;
+      /*
+       * =====================================================
+       * PAYMENT STATE
+       * =====================================================
+       */
+
+      let nextPaymentStatus =
+        order.paymentStatus;
+
+      /*
+       * A captured payment requires a real Razorpay refund.
+       *
+       * We mark REFUND_PENDING inside the transaction first.
+       * The actual Razorpay refund request happens after commit.
+       */
+
+      if (
+        paymentNeedsRefund &&
+        payment
+      ) {
+        nextPaymentStatus =
+          PaymentStatus.REFUND_PENDING;
+
+        refundRequired = {
+          paymentId: payment.id,
+
+          providerPaymentId:
+            payment.providerPaymentId!,
+
+          amount:
+            Number(payment.amount),
+
+          reason:
+            `Order ${order.orderNumber} cancelled by customer`,
+        };
+
+        await tx.payment.update({
+          where: {
+            id: payment.id,
+          },
+
+          data: {
+            status:
+              PaymentStatus.REFUND_PENDING,
+
+            refundAmount:
+              payment.amount,
+
+            refundReason:
+              `Order ${order.orderNumber} cancelled by customer`,
+          },
+        });
+      } else if (
+        refundAlreadyPending
+      ) {
+        /*
+         * Refund has already been requested.
+         *
+         * Do not create another refund.
+         */
+
+        nextPaymentStatus =
+          PaymentStatus.REFUND_PENDING;
+      } else if (
+        alreadyRefunded
+      ) {
+        /*
+         * Do not change an already completed refund.
+         */
+
+        nextPaymentStatus =
+          order.paymentStatus;
+      }
+
+      /*
+       * =====================================================
+       * CANCEL ORDER
+       * =====================================================
+       */
 
       const updatedOrder =
         await tx.order.update({
@@ -710,7 +893,10 @@ export async function cancelOrder(
             status:
               OrderStatus.CANCELLED,
 
-            paymentStatus,
+            paymentStatus:
+              nextPaymentStatus,
+
+            stockReserved: false,
           },
 
           include:
@@ -721,9 +907,77 @@ export async function cancelOrder(
         updatedOrder,
       );
     },
+
     {
       isolationLevel:
         Prisma.TransactionIsolationLevel.Serializable,
+
+      timeout: 15000,
     },
   );
+
+  /*
+   * ==========================================================
+   * RAZORPAY REFUND
+   * ==========================================================
+   *
+   * IMPORTANT:
+   *
+   * This is intentionally OUTSIDE the database transaction.
+   *
+   * If Razorpay is temporarily unavailable, the order remains
+   * cancelled and the payment remains REFUND_PENDING.
+   *
+   * It is NOT falsely marked REFUNDED.
+   */
+
+  if (refundRequired) {
+    try {
+      const refund =
+         await initiateRazorpayRefund(
+          refundRequired.paymentId,
+          refundRequired.providerPaymentId,
+          refundRequired.amount,
+          refundRequired.reason,
+        );
+
+      return {
+        ...result,
+
+        refundRequested: true,
+
+        refundPending: true,
+
+        refundId:
+          refund.refundId ?? null,
+      };
+    } catch (error) {
+      console.error(
+        "ORDER CANCELLATION REFUND ERROR:",
+        error,
+      );
+
+      /*
+       * The order is already safely cancelled and the DB payment
+       * is still REFUND_PENDING.
+       *
+       * Do NOT change it to REFUNDED.
+       *
+       * A retry/reconciliation mechanism can process this later.
+       */
+
+      return {
+        ...result,
+
+        refundRequested: false,
+
+        refundPending: true,
+
+        refundError:
+          "Refund request could not be completed yet",
+      };
+    }
+  }
+
+  return result;
 }

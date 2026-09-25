@@ -10,6 +10,55 @@ import {
 
 import { createOrderSchema } from "../validators/order.validator";
 
+// function handleOrderError(
+//   error: unknown,
+//   res: Response,
+//   operation: string,
+// ) {
+//   console.error(`[${operation}]`, {
+//     name: error instanceof Error ? error.name : typeof error,
+//     message: error instanceof Error ? error.message : error,
+//     stack: error instanceof Error ? error.stack : undefined,
+//     code:
+//       typeof error === "object" &&
+//       error !== null &&
+//       "code" in error
+//         ? (error as { code?: unknown }).code
+//         : undefined,
+//     meta:
+//       typeof error === "object" &&
+//       error !== null &&
+//       "meta" in error
+//         ? (error as { meta?: unknown }).meta
+//         : undefined,
+//   });
+
+//   const message =
+//     error instanceof Error
+//       ? error.message
+//       : "Internal server error";
+
+//   const statusByError: Record<string, number> = {
+//     ADDRESS_NOT_FOUND: 404,
+//     CART_EMPTY: 400,
+//     PRODUCT_UNAVAILABLE: 409,
+//     INVALID_CART_QUANTITY: 400,
+//     VARIANT_REQUIRED: 400,
+//     VARIANT_INVALID: 400,
+//     OUT_OF_STOCK: 409,
+//     INSUFFICIENT_STOCK: 409,
+//     ORDER_NUMBER_GENERATION_FAILED: 500,
+//     ORDER_NOT_FOUND: 404,
+//     ORDER_CANNOT_BE_CANCELLED: 409,
+//   };
+
+//   const status = statusByError[message] ?? 500;
+
+//   return res.status(status).json({
+//     success: false,
+//     message,
+//   });
+// }
 function handleOrderError(
   error: unknown,
   res: Response,
@@ -39,6 +88,7 @@ function handleOrderError(
       : "Internal server error";
 
   const statusByError: Record<string, number> = {
+    // Order creation
     ADDRESS_NOT_FOUND: 404,
     CART_EMPTY: 400,
     PRODUCT_UNAVAILABLE: 409,
@@ -48,15 +98,29 @@ function handleOrderError(
     OUT_OF_STOCK: 409,
     INSUFFICIENT_STOCK: 409,
     ORDER_NUMBER_GENERATION_FAILED: 500,
+
+    // Order lookup / cancellation
     ORDER_NOT_FOUND: 404,
     ORDER_CANNOT_BE_CANCELLED: 409,
+
+    // Payment / refund safety
+    PAYMENT_RECORD_NOT_FOUND: 409,
+    RAZORPAY_PAYMENT_ID_NOT_FOUND: 409,
   };
 
   const status = statusByError[message] ?? 500;
 
+  const responseMessage: Record<string, string> = {
+    PAYMENT_RECORD_NOT_FOUND:
+      "Payment information for this order could not be found. The order was not cancelled.",
+
+    RAZORPAY_PAYMENT_ID_NOT_FOUND:
+      "The captured payment cannot be refunded safely yet. Please contact support.",
+  };
+
   return res.status(status).json({
     success: false,
-    message,
+    message: responseMessage[message] ?? message,
   });
 }
 
