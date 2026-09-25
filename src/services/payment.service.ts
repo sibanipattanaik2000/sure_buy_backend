@@ -27,7 +27,9 @@ function toNumber(value: Prisma.Decimal | number): number {
 }
 
 function safeString(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
+  return typeof value === "string" && value.length > 0
+    ? value
+    : undefined;
 }
 
 /**
@@ -110,8 +112,6 @@ async function removePurchasedCartItems(
  * ============================================================
  * VALIDATE + DEDUCT STOCK
  * ============================================================
- *
- * IMPORTANT:
  *
  * This is the ONLY function in the purchase flow that
  * decreases inventory.
@@ -229,18 +229,19 @@ async function deductStockAfterSuccessfulPayment(
 
 /**
  * ============================================================
- * CREATE REFUND AFTER CAPTURED PAYMENT / STOCK FAILURE
+ * CREATE RAZORPAY REFUND
  * ============================================================
  *
- * IMPORTANT:
- *
  * Razorpay is an external system.
- *!/**\\.**(mp4|webm|mov|m4v)(**\\?**.\*)?$/i.test(item.imageUrl)
- * Therefore:
  *
- * 1. Database is first marked REFUND_PENDING.
- * 2. Razorpay refund is requested outside the DB transaction.
- * 3. Refund webhook finally marks it REFUNDED.
+ * Flow:
+ *
+ * 1. Payment is marked REFUND_PENDING inside the transaction.
+ * 2. Razorpay refund is requested outside the transaction.
+ * 3. Razorpay webhook finally confirms the refund.
+ *
+ * IMPORTANT:
+ * A lost Razorpay response does NOT mean the refund failed.
  */
 export async function initiateRazorpayRefund(
   paymentId: string,
@@ -248,8 +249,8 @@ export async function initiateRazorpayRefund(
   amount: number,
   reason: string,
 ) {
-  /** 
-   * Prevent duplicate refund requests.
+  /**
+   * First check the current database state.
    */
   const payment = await prisma.payment.findUnique({
     where: {
@@ -267,18 +268,29 @@ export async function initiateRazorpayRefund(
     throw new Error("PAYMENT_NOT_FOUND");
   }
 
+  /**
+   * Already terminal.
+   */
   if (
     payment.status === PaymentStatus.REFUNDED ||
     payment.status === PaymentStatus.PARTIALLY_REFUNDED
   ) {
     return {
       alreadyRefunded: true,
+      alreadyPending: false,
       refundId: payment.refundId,
     };
   }
 
-  if (payment.status === PaymentStatus.REFUND_PENDING && payment.refundId) {
+  /**
+   * Refund request already created.
+   */
+  if (
+    payment.status === PaymentStatus.REFUND_PENDING &&
+    payment.refundId
+  ) {
     return {
+      alreadyRefunded: false,
       alreadyPending: true,
       refundId: payment.refundId,
     };
@@ -300,30 +312,99 @@ export async function initiateRazorpayRefund(
     console.error("RAZORPAY REFUND CREATION ERROR:", error);
 
     /**
-     * Keep REFUND_PENDING.
+     * IMPORTANT:
      *
-     * This is deliberate.
+     * Do not mark the refund as failed here.
      *
-     * A network timeout does NOT prove that Razorpay
-     * rejected the refund. The refund may have been created
-     * successfully and the response may simply have been lost.
+     * A timeout/network failure can happen after Razorpay
+     * has actually created the refund.
+     *
+     * The caller keeps the payment in REFUND_PENDING.
      */
     throw new Error("REFUND_REQUEST_FAILED");
   }
 
   const refundId = safeString(refund?.id);
 
-  /**
-   * If Razorpay doesn't return a refund ID,
-   * don't claim that the refund succeeded.
-   */
   if (!refundId) {
     throw new Error("REFUND_REQUEST_FAILED");
   }
 
-  await prisma.payment.update({
+  /**
+   * ==========================================================
+   * REFUND WEBHOOK RACE PROTECTION
+   * ==========================================================
+   *
+   * Razorpay may send refund.processed extremely quickly.
+   *
+   * Therefore we MUST check the database again after the
+   * Razorpay API call and before writing REFUND_PENDING.
+   *
+   * If the webhook already moved the payment to a terminal
+   * refund state, never downgrade it back to REFUND_PENDING.
+   */
+  const updatedPayment = await prisma.payment.findUnique({
     where: {
       id: paymentId,
+    },
+    select: {
+      id: true,
+      status: true,
+      refundId: true,
+      refundAmount: true,
+    },
+  });
+
+  if (!updatedPayment) {
+    throw new Error("PAYMENT_NOT_FOUND");
+  }
+
+  /**
+   * Webhook already completed the refund.
+   */
+  if (
+    updatedPayment.status === PaymentStatus.REFUNDED ||
+    updatedPayment.status === PaymentStatus.PARTIALLY_REFUNDED
+  ) {
+    return {
+      alreadyRefunded: true,
+      alreadyPending: false,
+      refundId:
+        updatedPayment.refundId ??
+        refundId,
+    };
+  }
+
+  /**
+   * Another request may already have stored a refund ID.
+   */
+  if (
+    updatedPayment.status === PaymentStatus.REFUND_PENDING &&
+    updatedPayment.refundId
+  ) {
+    return {
+      alreadyRefunded: false,
+      alreadyPending: true,
+      refundId: updatedPayment.refundId,
+    };
+  }
+
+  /**
+   * Only now write REFUND_PENDING.
+   *
+   * Conditional update prevents a terminal refund state from
+   * being overwritten if another process changes it between
+   * the SELECT and UPDATE.
+   */
+  const pendingUpdate = await prisma.payment.updateMany({
+    where: {
+      id: paymentId,
+      status: {
+        notIn: [
+          PaymentStatus.REFUNDED,
+          PaymentStatus.PARTIALLY_REFUNDED,
+        ],
+      },
     },
     data: {
       status: PaymentStatus.REFUND_PENDING,
@@ -332,6 +413,36 @@ export async function initiateRazorpayRefund(
       refundReason: reason,
     },
   });
+
+  /**
+   * Another process won the race.
+   */
+  if (pendingUpdate.count !== 1) {
+    const latestPayment = await prisma.payment.findUnique({
+      where: {
+        id: paymentId,
+      },
+      select: {
+        status: true,
+        refundId: true,
+      },
+    });
+
+    if (!latestPayment) {
+      throw new Error("PAYMENT_NOT_FOUND");
+    }
+
+    return {
+      alreadyRefunded:
+        latestPayment.status === PaymentStatus.REFUNDED ||
+        latestPayment.status === PaymentStatus.PARTIALLY_REFUNDED,
+      alreadyPending:
+        latestPayment.status === PaymentStatus.REFUND_PENDING,
+      refundId:
+        latestPayment.refundId ??
+        refundId,
+    };
+  }
 
   return {
     alreadyRefunded: false,
@@ -367,97 +478,160 @@ export async function processCapturedPayment(
       }
     | undefined;
 
-  try {
-    const result = await prisma.$transaction(
-      async (tx) => {
-        const payment = await tx.payment.findUnique({
-          where: {
-            providerOrderId,
-          },
-          include: {
-            order: {
-              select: {
-                id: true,
-                userId: true,
-                orderNumber: true,
-                currency: true,
-                totalAmount: true,
-                paymentStatus: true,
-                status: true,
-                stockReserved: true,
-                paymentMethod: true,
-              },
+  const result = await prisma.$transaction(
+    async (tx) => {
+      const payment = await tx.payment.findUnique({
+        where: {
+          providerOrderId,
+        },
+        include: {
+          order: {
+            select: {
+              id: true,
+              userId: true,
+              orderNumber: true,
+              currency: true,
+              totalAmount: true,
+              paymentStatus: true,
+              status: true,
+              stockReserved: true,
+              paymentMethod: true,
             },
+          },
+        },
+      });
+
+      if (!payment) {
+        throw new Error("PAYMENT_NOT_FOUND");
+      }
+
+      /**
+       * Exact payment idempotency.
+       */
+      if (
+        payment.status === PaymentStatus.PAID ||
+        payment.status === PaymentStatus.PARTIALLY_PAID
+      ) {
+        return {
+          success: true,
+          alreadyProcessed: true,
+          orderId: payment.orderId,
+          orderNumber: payment.order.orderNumber,
+          paymentId: payment.id,
+          razorpayPaymentId:
+            payment.providerPaymentId ??
+            providerPaymentId,
+          status: payment.status,
+        };
+      }
+
+      /**
+       * Refund already in progress/completed.
+       */
+      if (
+        payment.status === PaymentStatus.REFUND_PENDING ||
+        payment.status === PaymentStatus.REFUNDED ||
+        payment.status === PaymentStatus.PARTIALLY_REFUNDED
+      ) {
+        return {
+          success: false,
+          alreadyProcessed: true,
+          orderId: payment.orderId,
+          orderNumber: payment.order.orderNumber,
+          paymentId: payment.id,
+          razorpayPaymentId:
+            payment.providerPaymentId ??
+            providerPaymentId,
+          status: payment.status,
+        };
+      }
+
+      /**
+       * Payment ID mismatch protection.
+       */
+      if (
+        payment.providerPaymentId &&
+        payment.providerPaymentId !== providerPaymentId
+      ) {
+        throw new Error("PAYMENT_ID_MISMATCH");
+      }
+
+      /**
+       * Cancelled order.
+       *
+       * If money was captured after cancellation,
+       * refund it.
+       */
+      if (payment.order.status === OrderStatus.CANCELLED) {
+        const reason =
+          "Payment captured after order cancellation";
+
+        refundRequired = {
+          paymentId: payment.id,
+          providerPaymentId,
+          amount: toNumber(payment.amount),
+          reason,
+        };
+
+        await tx.payment.update({
+          where: {
+            id: payment.id,
+          },
+          data: {
+            providerPaymentId,
+            status: PaymentStatus.REFUND_PENDING,
+            refundAmount: payment.amount,
+            refundReason: reason,
           },
         });
 
-        if (!payment) {
-          throw new Error("PAYMENT_NOT_FOUND");
-        }
+        return {
+          success: false,
+          alreadyProcessed: false,
+          orderId: payment.orderId,
+          orderNumber: payment.order.orderNumber,
+          paymentId: payment.id,
+          razorpayPaymentId: providerPaymentId,
+          status: PaymentStatus.REFUND_PENDING,
+        };
+      }
 
-        /**
-         * Exact payment idempotency.
-         */
+      /**
+       * ======================================================
+       * STOCK
+       * ======================================================
+       *
+       * Razorpay has already captured the customer's money.
+       *
+       * Therefore any known fulfillment/inventory failure
+       * must result in REFUND_PENDING.
+       */
+      try {
+        await deductStockAfterSuccessfulPayment(
+          tx,
+          payment.orderId,
+        );
+      } catch (error) {
+        const refundableStockErrors = new Set([
+          "INSUFFICIENT_STOCK_AFTER_PAYMENT",
+          "VARIANT_NOT_FOUND",
+          "VARIANT_REQUIRED",
+          "ORDER_HAS_NO_ITEMS",
+          "INVALID_ORDER_QUANTITY",
+        ]);
+
         if (
-          payment.status === PaymentStatus.PAID ||
-          payment.status === PaymentStatus.PARTIALLY_PAID
+          error instanceof Error &&
+          refundableStockErrors.has(error.message)
         ) {
-          return {
-            success: true,
-            alreadyProcessed: true,
-            orderId: payment.orderId,
-            orderNumber: payment.order.orderNumber,
-            paymentId: payment.id,
-            razorpayPaymentId: payment.providerPaymentId ?? providerPaymentId,
-            status: payment.status,
-          };
-        }
+          const reason =
+            `Payment captured but order could not be fulfilled: ${error.message}`;
 
-        /**
-         * A refund already in progress means we must not
-         * process the capture again.
-         */
-        if (
-          payment.status === PaymentStatus.REFUND_PENDING ||
-          payment.status === PaymentStatus.REFUNDED ||
-          payment.status === PaymentStatus.PARTIALLY_REFUNDED
-        ) {
-          return {
-            success: false,
-            alreadyProcessed: true,
-            orderId: payment.orderId,
-            orderNumber: payment.order.orderNumber,
-            paymentId: payment.id,
-            razorpayPaymentId: payment.providerPaymentId ?? providerPaymentId,
-            status: payment.status,
-          };
-        }
-
-        /**
-         * Payment must belong to the same provider payment.
-         *
-         * For the first capture, providerPaymentId can be empty.
-         * For retries, a different payment ID must not overwrite
-         * an existing captured payment.
-         */
-        if (
-          payment.providerPaymentId &&
-          payment.providerPaymentId !== providerPaymentId
-        ) {
-          throw new Error("PAYMENT_ID_MISMATCH");
-        }
-
-        /**
-         * Do not process cancelled orders.
-         *
-         * If money was captured after cancellation, refund it.
-         */
-        if (payment.order.status === OrderStatus.CANCELLED) {
           refundRequired = {
             paymentId: payment.id,
             providerPaymentId,
             amount: toNumber(payment.amount),
-            reason: "Payment captured after order cancellation",
+            reason,
           };
 
           await tx.payment.update({
@@ -468,7 +642,7 @@ export async function processCapturedPayment(
               providerPaymentId,
               status: PaymentStatus.REFUND_PENDING,
               refundAmount: payment.amount,
-              refundReason: "Payment captured after order cancellation",
+              refundReason: reason,
             },
           });
 
@@ -484,150 +658,118 @@ export async function processCapturedPayment(
         }
 
         /**
-         * ======================================================
-         * STOCK
-         * ======================================================
-         */
-        try {
-          await deductStockAfterSuccessfulPayment(tx, payment.orderId);
-        } catch (error) {
-          if (
-            error instanceof Error &&
-            error.message === "INSUFFICIENT_STOCK_AFTER_PAYMENT"
-          ) {
-            refundRequired = {
-              paymentId: payment.id,
-              providerPaymentId,
-              amount: toNumber(payment.amount),
-              reason: "Payment captured but requested stock was unavailable",
-            };
-
-            await tx.payment.update({
-              where: {
-                id: payment.id,
-              },
-              data: {
-                providerPaymentId,
-                status: PaymentStatus.REFUND_PENDING,
-                refundAmount: payment.amount,
-                refundReason:
-                  "Payment captured but requested stock was unavailable",
-              },
-            });
-
-            return {
-              success: false,
-              alreadyProcessed: false,
-              orderId: payment.orderId,
-              orderNumber: payment.order.orderNumber,
-              paymentId: payment.id,
-              razorpayPaymentId: providerPaymentId,
-              status: PaymentStatus.REFUND_PENDING,
-            };
-          }
-
-          throw error;
-        }
-
-        /**
-         * ======================================================
-         * PAYMENT STATUS
-         * ======================================================
+         * Unexpected DB/application failure.
          *
-         * COD:
-         * ₹500 captured → PARTIALLY_PAID
+         * Transaction rolls back.
          *
-         * UPI/CARD/EMI:
-         * Full amount captured → PAID
-         */
-        const isCod = payment.order.paymentMethod === PaymentMethod.COD;
-
-        const newPaymentStatus = isCod
-          ? PaymentStatus.PARTIALLY_PAID
-          : PaymentStatus.PAID;
-
-        const updatedPayment = await tx.payment.update({
-          where: {
-            id: payment.id,
-          },
-          data: {
-            providerPaymentId: providerPaymentId,
-            status: newPaymentStatus,
-          },
-        });
-
-        await tx.order.update({
-          where: {
-            id: payment.orderId,
-          },
-          data: {
-            paymentStatus: newPaymentStatus,
-            status: OrderStatus.CONFIRMED,
-          },
-        });
-
-        await removePurchasedCartItems(
-          tx,
-          payment.order.userId,
-          payment.orderId,
-        );
-
-        return {
-          success: true,
-          alreadyProcessed: false,
-          orderId: payment.orderId,
-          orderNumber: payment.order.orderNumber,
-          paymentId: updatedPayment.id,
-          razorpayPaymentId: providerPaymentId,
-          status: newPaymentStatus,
-        };
-      },
-      {
-        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-        timeout: 15000,
-      },
-    );
-
-    /**
-     * If the transaction determined that a refund is required,
-     * execute it AFTER the transaction has committed.
-     */
-    if (refundRequired) {
-      try {
-        const refund = await initiateRazorpayRefund(
-          refundRequired.paymentId,
-          refundRequired.providerPaymentId,
-          refundRequired.amount,
-          refundRequired.reason,
-        );
-
-        return {
-          ...result,
-          refundId: refund.refundId,
-          refundRequested: true,
-        };
-      } catch (error) {
-        console.error("REFUND REQUEST FAILED:", error);
-
-        /**
          * IMPORTANT:
-         *
-         * The payment remains REFUND_PENDING.
-         *
-         * Never tell the customer that the money was refunded.
+         * This is intentionally not converted into a refund
+         * because the database transaction itself failed and
+         * we cannot safely know what state was committed.
          */
-        return {
-          ...result,
-          refundRequested: false,
-          refundPending: true,
-        };
+        throw error;
       }
-    }
 
-    return result;
-  } catch (error) {
-    throw error;
+      /**
+       * ======================================================
+       * PAYMENT STATUS
+       * ======================================================
+       *
+       * COD:
+       * ₹500 captured → PARTIALLY_PAID
+       *
+       * UPI/Card/EMI:
+       * Full amount captured → PAID
+       */
+      const isCod =
+        payment.order.paymentMethod === PaymentMethod.COD;
+
+      const newPaymentStatus = isCod
+        ? PaymentStatus.PARTIALLY_PAID
+        : PaymentStatus.PAID;
+
+      const updatedPayment = await tx.payment.update({
+        where: {
+          id: payment.id,
+        },
+        data: {
+          providerPaymentId,
+          status: newPaymentStatus,
+        },
+      });
+
+      await tx.order.update({
+        where: {
+          id: payment.orderId,
+        },
+        data: {
+          paymentStatus: newPaymentStatus,
+          status: OrderStatus.CONFIRMED,
+        },
+      });
+
+      await removePurchasedCartItems(
+        tx,
+        payment.order.userId,
+        payment.orderId,
+      );
+
+      return {
+        success: true,
+        alreadyProcessed: false,
+        orderId: payment.orderId,
+        orderNumber: payment.order.orderNumber,
+        paymentId: updatedPayment.id,
+        razorpayPaymentId: providerPaymentId,
+        status: newPaymentStatus,
+      };
+    },
+    {
+      isolationLevel:
+        Prisma.TransactionIsolationLevel.Serializable,
+      timeout: 15000,
+    },
+  );
+
+  /**
+   * ==========================================================
+   * EXECUTE REFUND AFTER TRANSACTION COMMIT
+   * ==========================================================
+   */
+  if (refundRequired) {
+    try {
+      const refund = await initiateRazorpayRefund(
+        refundRequired.paymentId,
+        refundRequired.providerPaymentId,
+        refundRequired.amount,
+        refundRequired.reason,
+      );
+
+      return {
+        ...result,
+        refundId: refund.refundId,
+        refundRequested: !refund.alreadyRefunded,
+        refundPending:
+          refund.alreadyPending ||
+          false,
+      };
+    } catch (error) {
+      console.error("REFUND REQUEST FAILED:", error);
+
+      /**
+       * Payment remains REFUND_PENDING.
+       *
+       * Never tell the customer that the money was refunded.
+       */
+      return {
+        ...result,
+        refundRequested: false,
+        refundPending: true,
+      };
+    }
   }
+
+  return result;
 }
 
 /**
@@ -637,7 +779,10 @@ export async function processCapturedPayment(
  *
  * NEVER changes inventory.
  */
-export async function createRazorpayOrder(userId: string, orderId: string) {
+export async function createRazorpayOrder(
+  userId: string,
+  orderId: string,
+) {
   const order = await prisma.order.findFirst({
     where: {
       id: orderId,
@@ -677,7 +822,10 @@ export async function createRazorpayOrder(userId: string, orderId: string) {
       orderId: order.id,
       provider: RAZORPAY_PROVIDER,
       status: {
-        in: [PaymentStatus.PENDING, PaymentStatus.AUTHORIZED],
+        in: [
+          PaymentStatus.PENDING,
+          PaymentStatus.AUTHORIZED,
+        ],
       },
       providerOrderId: {
         not: null,
@@ -699,7 +847,9 @@ export async function createRazorpayOrder(userId: string, orderId: string) {
       orderNumber: order.orderNumber,
       razorpayOrderId: existingPayment.providerOrderId,
       amount: toNumber(existingPayment.amount),
-      amountInPaise: toPaise(toNumber(existingPayment.amount)),
+      amountInPaise: toPaise(
+        toNumber(existingPayment.amount),
+      ),
       currency: existingPayment.currency,
       keyId: env.RAZORPAY_KEY_ID,
     };
@@ -734,7 +884,10 @@ export async function createRazorpayOrder(userId: string, orderId: string) {
       },
     });
   } catch (error) {
-    console.error("RAZORPAY ORDER CREATION ERROR:", error);
+    console.error(
+      "RAZORPAY ORDER CREATION ERROR:",
+      error,
+    );
 
     throw error;
   }
@@ -774,7 +927,11 @@ export async function verifyRazorpayPayment(
   razorpayOrderId: string,
   razorpaySignature: string,
 ) {
-  if (!razorpayPaymentId || !razorpayOrderId || !razorpaySignature) {
+  if (
+    !razorpayPaymentId ||
+    !razorpayOrderId ||
+    !razorpaySignature
+  ) {
     throw new Error("INVALID_PAYMENT_RESPONSE");
   }
 
@@ -822,29 +979,50 @@ export async function verifyRazorpayPayment(
   }
 
   /**
-   * The amount comes from our DB.
+   * Amount comes from our DB.
    *
    * Never trust the browser amount.
    */
-  const expectedAmountInPaise = toPaise(toNumber(payment.amount));
+  const expectedAmountInPaise = toPaise(
+    toNumber(payment.amount),
+  );
 
   /**
    * Checkout signature.
    */
   const expectedSignature = crypto
-    .createHmac("sha256", env.RAZORPAY_KEY_SECRET)
-    .update(`${payment.providerOrderId}|${razorpayPaymentId}`)
+    .createHmac(
+      "sha256",
+      env.RAZORPAY_KEY_SECRET,
+    )
+    .update(
+      `${payment.providerOrderId}|${razorpayPaymentId}`,
+    )
     .digest("hex");
 
-  const receivedBuffer = Buffer.from(razorpaySignature, "utf8");
+  const receivedBuffer = Buffer.from(
+    razorpaySignature,
+    "utf8",
+  );
 
-  const expectedBuffer = Buffer.from(expectedSignature, "utf8");
+  const expectedBuffer = Buffer.from(
+    expectedSignature,
+    "utf8",
+  );
 
-  if (receivedBuffer.length !== expectedBuffer.length) {
+  if (
+    receivedBuffer.length !==
+    expectedBuffer.length
+  ) {
     throw new Error("INVALID_PAYMENT_SIGNATURE");
   }
 
-  if (!crypto.timingSafeEqual(receivedBuffer, expectedBuffer)) {
+  if (
+    !crypto.timingSafeEqual(
+      receivedBuffer,
+      expectedBuffer,
+    )
+  ) {
     throw new Error("INVALID_PAYMENT_SIGNATURE");
   }
 
@@ -854,35 +1032,71 @@ export async function verifyRazorpayPayment(
   let razorpayPayment;
 
   try {
-    razorpayPayment = await razorpay.payments.fetch(razorpayPaymentId);
+    razorpayPayment =
+      await razorpay.payments.fetch(
+        razorpayPaymentId,
+      );
   } catch (error) {
-    console.error("RAZORPAY PAYMENT FETCH ERROR:", error);
+    console.error(
+      "RAZORPAY PAYMENT FETCH ERROR:",
+      error,
+    );
 
-    throw new Error("PAYMENT_VERIFICATION_FAILED");
+    throw new Error(
+      "PAYMENT_VERIFICATION_FAILED",
+    );
   }
 
-  if (razorpayPayment.order_id !== payment.providerOrderId) {
-    throw new Error("PAYMENT_ORDER_MISMATCH");
+  if (
+    razorpayPayment.order_id !==
+    payment.providerOrderId
+  ) {
+    throw new Error(
+      "PAYMENT_ORDER_MISMATCH",
+    );
   }
 
-  if (razorpayPayment.amount !== expectedAmountInPaise) {
-    throw new Error("PAYMENT_AMOUNT_MISMATCH");
+  if (
+    razorpayPayment.amount !==
+    expectedAmountInPaise
+  ) {
+    throw new Error(
+      "PAYMENT_AMOUNT_MISMATCH",
+    );
   }
 
-  if (razorpayPayment.currency !== order.currency) {
-    throw new Error("PAYMENT_CURRENCY_MISMATCH");
+  if (
+    razorpayPayment.currency !==
+    order.currency
+  ) {
+    throw new Error(
+      "PAYMENT_CURRENCY_MISMATCH",
+    );
   }
 
   /**
    * Only CAPTURED can consume stock.
    */
-  if (razorpayPayment.status !== "captured") {
-    if (razorpayPayment.status === "authorized") {
-      throw new Error("PAYMENT_NOT_CAPTURED");
+  if (
+    razorpayPayment.status !==
+    "captured"
+  ) {
+    if (
+      razorpayPayment.status ===
+      "authorized"
+    ) {
+      throw new Error(
+        "PAYMENT_NOT_CAPTURED",
+      );
     }
 
-    throw new Error("PAYMENT_VERIFICATION_FAILED");
+    throw new Error(
+      "PAYMENT_VERIFICATION_FAILED",
+    );
   }
 
-  return processCapturedPayment(payment.providerOrderId!, razorpayPaymentId);
+  return processCapturedPayment(
+    payment.providerOrderId!,
+    razorpayPaymentId,
+  );
 }
