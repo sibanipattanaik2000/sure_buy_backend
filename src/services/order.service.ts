@@ -1,11 +1,5 @@
-import {
-  Prisma,
-  OrderStatus,
-  PaymentStatus,
-} from "@prisma/client";
-import {
-  initiateRazorpayRefund,
-} from "./payment.service";
+import { Prisma, OrderStatus, PaymentStatus } from "@prisma/client";
+import { initiateRazorpayRefund } from "./payment.service";
 import { prisma } from "../config/prisma";
 import type { CreateOrderInput } from "../validators/order.validator";
 
@@ -122,8 +116,7 @@ function serializeOrder(order: OrderWithItems) {
       color: item.color,
 
       imageUrl:
-        item.imageUrl &&
-        !/\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(item.imageUrl)
+        item.imageUrl && !/\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(item.imageUrl)
           ? item.imageUrl
           : (item.variant?.images[0]?.url ??
             item.product?.images[0]?.url ??
@@ -146,17 +139,12 @@ function serializeOrder(order: OrderWithItems) {
 function generateOrderNumber(): string {
   const timestamp = Date.now().toString(36).toUpperCase();
 
-  const random = Math.random()
-    .toString(36)
-    .substring(2, 8)
-    .toUpperCase();
+  const random = Math.random().toString(36).substring(2, 8).toUpperCase();
 
   return `PB-${timestamp}-${random}`;
 }
 
-async function createUniqueOrderNumber(
-  tx: TransactionClient,
-): Promise<string> {
+async function createUniqueOrderNumber(tx: TransactionClient): Promise<string> {
   for (let attempt = 0; attempt < 5; attempt++) {
     const orderNumber = generateOrderNumber();
 
@@ -177,10 +165,7 @@ async function createUniqueOrderNumber(
   throw new Error("ORDER_NUMBER_GENERATION_FAILED");
 }
 
-export async function createOrder(
-  userId: string,
-  input: CreateOrderInput,
-) {
+export async function createOrder(userId: string, input: CreateOrderInput) {
   return prisma.$transaction(
     async (tx) => {
       /*
@@ -286,18 +271,12 @@ export async function createOrder(
          * Variant products must always have a valid variant.
          */
 
-        if (
-          item.product.variants.length > 0 &&
-          !item.variant
-        ) {
+        if (item.product.variants.length > 0 && !item.variant) {
           throw new Error("VARIANT_REQUIRED");
         }
 
         if (item.variant) {
-          if (
-            item.variant.productId !==
-            item.productId
-          ) {
+          if (item.variant.productId !== item.productId) {
             throw new Error("VARIANT_INVALID");
           }
 
@@ -311,10 +290,7 @@ export async function createOrder(
             throw new Error("OUT_OF_STOCK");
           }
 
-          if (
-            item.quantity >
-            item.variant.stock
-          ) {
+          if (item.quantity > item.variant.stock) {
             throw new Error("INSUFFICIENT_STOCK");
           }
         }
@@ -328,90 +304,59 @@ export async function createOrder(
 
       let subtotal = 0;
 
-      const orderItems = cart.items.map(
-        (item) => {
-          const unitPrice =
-            decimalToNumber(
-              item.variant?.price ??
-                item.product.price,
-            );
+      const orderItems = cart.items.map((item) => {
+        const unitPrice = decimalToNumber(
+          item.variant?.price ?? item.product.price,
+        );
 
-          const originalPrice =
-            decimalToNumber(
-              item.variant?.originalPrice ??
-                item.product.originalPrice,
-            );
+        const originalPrice = decimalToNumber(
+          item.variant?.originalPrice ?? item.product.originalPrice,
+        );
 
-          const itemSubtotal = Number(
-            (
-              unitPrice *
-              item.quantity
-            ).toFixed(2),
-          );
+        const itemSubtotal = Number((unitPrice * item.quantity).toFixed(2));
 
-          subtotal += itemSubtotal;
+        subtotal += itemSubtotal;
 
-          const imageUrl =
-            item.variant?.images[0]?.url ??
-            item.product.images[0]?.url ??
-            null;
+        const imageUrl =
+          item.variant?.images[0]?.url ?? item.product.images[0]?.url ?? null;
 
-          return {
-            productId:
-              item.productId,
+        return {
+          productId: item.productId,
 
-            variantId:
-              item.variantId,
+          variantId: item.variantId,
 
-            productName:
-              item.product.name,
+          productName: item.product.name,
 
-            brand:
-              item.product.brand,
+          brand: item.product.brand,
 
-            category:
-              item.product.category,
+          category: item.product.category,
 
-            condition:
-              item.product.condition,
+          condition: item.product.condition,
 
-            storage:
-              item.variant?.storage ??
-              null,
+          storage: item.variant?.storage ?? null,
 
-            color:
-              item.variant?.color ??
-              null,
+          color: item.variant?.color ?? null,
 
-            imageUrl,
+          imageUrl,
 
-            unitPrice,
+          unitPrice,
 
-            originalPrice,
+          originalPrice,
 
-            quantity:
-              item.quantity,
+          quantity: item.quantity,
 
-            subtotal:
-              itemSubtotal,
-          };
-        },
-      );
+          subtotal: itemSubtotal,
+        };
+      });
 
-      subtotal = Number(
-        subtotal.toFixed(2),
-      );
+      subtotal = Number(subtotal.toFixed(2));
 
       const deliveryAmount = 0;
 
       const discountAmount = 0;
 
       const totalAmount = Number(
-        (
-          subtotal +
-          deliveryAmount -
-          discountAmount
-        ).toFixed(2),
+        (subtotal + deliveryAmount - discountAmount).toFixed(2),
       );
 
       /*
@@ -420,8 +365,7 @@ export async function createOrder(
        * =====================================================
        */
 
-      const orderNumber =
-        await createUniqueOrderNumber(tx);
+      const orderNumber = await createUniqueOrderNumber(tx);
 
       /*
        * =====================================================
@@ -438,115 +382,83 @@ export async function createOrder(
        * =====================================================
        */
 
-      const order =
-        await tx.order.create({
-          data: {
-            orderNumber,
+      const order = await tx.order.create({
+        data: {
+          orderNumber,
 
-            userId,
+          userId,
 
-            status:
-              OrderStatus.PENDING,
+          status: OrderStatus.PENDING,
 
-            paymentStatus:
-              PaymentStatus.PENDING,
+          paymentStatus: PaymentStatus.PENDING,
 
-            paymentMethod:
-              input.paymentMethod,
+          paymentMethod: input.paymentMethod,
 
-            stockReserved:
-              false,
+          stockReserved: false,
 
-            subtotal,
+          subtotal,
 
-            deliveryAmount,
+          deliveryAmount,
 
-            discountAmount,
+          discountAmount,
 
-            totalAmount,
+          totalAmount,
 
-            currency: "INR",
+          currency: "INR",
 
-            shippingFullName:
-              address.fullName,
+          shippingFullName: address.fullName,
 
-            shippingPhone:
-              address.phone,
+          shippingPhone: address.phone,
 
-            shippingAddressLine1:
-              address.addressLine1,
+          shippingAddressLine1: address.addressLine1,
 
-            shippingAddressLine2:
-              address.addressLine2,
+          shippingAddressLine2: address.addressLine2,
 
-            shippingArea:
-              address.landmark,
+          shippingArea: address.landmark,
 
-            shippingCity:
-              address.city,
+          shippingCity: address.city,
 
-            shippingState:
-              address.state,
+          shippingState: address.state,
 
-            shippingPostalCode:
-              address.postalCode,
+          shippingPostalCode: address.postalCode,
 
-            shippingCountry:
-              address.country,
+          shippingCountry: address.country,
 
-            shippingLandmark:
-              address.landmark,
+          shippingLandmark: address.landmark,
 
-            items: {
-              create:
-                orderItems.map(
-                  (item) => ({
-                    productId:
-                      item.productId,
+          items: {
+            create: orderItems.map((item) => ({
+              productId: item.productId,
 
-                    variantId:
-                      item.variantId,
+              variantId: item.variantId,
 
-                    productName:
-                      item.productName,
+              productName: item.productName,
 
-                    brand:
-                      item.brand,
+              brand: item.brand,
 
-                    category:
-                      item.category,
+              category: item.category,
 
-                    condition:
-                      item.condition,
+              condition: item.condition,
 
-                    storage:
-                      item.storage,
+              storage: item.storage,
 
-                    color:
-                      item.color,
+              color: item.color,
 
-                    imageUrl:
-                      item.imageUrl,
+              imageUrl: item.imageUrl,
 
-                    unitPrice:
-                      item.unitPrice,
+              unitPrice: item.unitPrice,
 
-                    originalPrice:
-                      item.originalPrice,
+              originalPrice: item.originalPrice,
 
-                    quantity:
-                      item.quantity,
+              quantity: item.quantity,
 
-                    subtotal:
-                      item.subtotal,
-                  }),
-                ),
-            },
+              subtotal: item.subtotal,
+            })),
           },
+        },
 
-          include:
-            ORDER_INCLUDE,
-        });
+        include: ORDER_INCLUDE,
+      });
 
       /*
        * =====================================================
@@ -561,28 +473,22 @@ export async function createOrder(
       return serializeOrder(order);
     },
     {
-      isolationLevel:
-        Prisma.TransactionIsolationLevel.ReadCommitted,
+      isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
 
       timeout: 15000,
     },
   );
 }
 
-export async function getOrderById(
-  userId: string,
-  orderId: string,
-) {
-  const order =
-    await prisma.order.findFirst({
-      where: {
-        id: orderId,
-        userId,
-      },
+export async function getOrderById(userId: string, orderId: string) {
+  const order = await prisma.order.findFirst({
+    where: {
+      id: orderId,
+      userId,
+    },
 
-      include:
-        ORDER_INCLUDE,
-    });
+    include: ORDER_INCLUDE,
+  });
 
   if (!order) {
     throw new Error("ORDER_NOT_FOUND");
@@ -591,32 +497,23 @@ export async function getOrderById(
   return serializeOrder(order);
 }
 
-export async function getUserOrders(
-  userId: string,
-) {
-  const orders =
-    await prisma.order.findMany({
-      where: {
-        userId,
-      },
+export async function getUserOrders(userId: string) {
+  const orders = await prisma.order.findMany({
+    where: {
+      userId,
+    },
 
-      orderBy: {
-        createdAt: "desc",
-      },
+    orderBy: {
+      createdAt: "desc",
+    },
 
-      include:
-        ORDER_INCLUDE,
-    });
+    include: ORDER_INCLUDE,
+  });
 
-  return orders.map(
-    serializeOrder,
-  );
+  return orders.map(serializeOrder);
 }
 
-export async function cancelOrder(
-  userId: string,
-  orderId: string,
-) {
+export async function cancelOrder(userId: string, orderId: string) {
   /*
    * Refund information is collected inside the transaction,
    * but the actual Razorpay API call happens AFTER the
@@ -636,42 +533,32 @@ export async function cancelOrder(
 
   const result = await prisma.$transaction(
     async (tx) => {
-      const order =
-        await tx.order.findFirst({
-          where: {
-            id: orderId,
-            userId,
-          },
-          include: {
-            items: true,
-            payments: {
-              orderBy: {
-                createdAt: "desc",
-              },
+      const order = await tx.order.findFirst({
+        where: {
+          id: orderId,
+          userId,
+        },
+        include: {
+          items: true,
+          payments: {
+            orderBy: {
+              createdAt: "desc",
             },
           },
-        });
+        },
+      });
 
       if (!order) {
-        throw new Error(
-          "ORDER_NOT_FOUND",
-        );
+        throw new Error("ORDER_NOT_FOUND");
       }
 
-      const cancellableStatuses:
-        OrderStatus[] = [
-          OrderStatus.PENDING,
-          OrderStatus.CONFIRMED,
-        ];
+      const cancellableStatuses: OrderStatus[] = [
+        OrderStatus.PENDING,
+        OrderStatus.CONFIRMED,
+      ];
 
-      if (
-        !cancellableStatuses.includes(
-          order.status,
-        )
-      ) {
-        throw new Error(
-          "ORDER_CANNOT_BE_CANCELLED",
-        );
+      if (!cancellableStatuses.includes(order.status)) {
+        throw new Error("ORDER_CANNOT_BE_CANCELLED");
       }
 
       /*
@@ -683,7 +570,17 @@ export async function cancelOrder(
        */
 
       const payment =
-        order.payments[0] ?? null;
+        order.payments.find(
+          (candidate) =>
+            candidate.providerPaymentId &&
+            (candidate.status === PaymentStatus.PAID ||
+              candidate.status === PaymentStatus.PARTIALLY_PAID ||
+              candidate.status === PaymentStatus.REFUND_PENDING ||
+              candidate.status === PaymentStatus.REFUNDED ||
+              candidate.status === PaymentStatus.PARTIALLY_REFUNDED),
+        ) ??
+        order.payments[0] ??
+        null;
 
       /*
        * =====================================================
@@ -707,20 +604,15 @@ export async function cancelOrder(
        */
 
       const paymentNeedsRefund =
-        order.paymentStatus ===
-          PaymentStatus.PAID ||
-        order.paymentStatus ===
-          PaymentStatus.PARTIALLY_PAID;
+        order.paymentStatus === PaymentStatus.PAID ||
+        order.paymentStatus === PaymentStatus.PARTIALLY_PAID;
 
       const refundAlreadyPending =
-        order.paymentStatus ===
-        PaymentStatus.REFUND_PENDING;
+        order.paymentStatus === PaymentStatus.REFUND_PENDING;
 
       const alreadyRefunded =
-        order.paymentStatus ===
-          PaymentStatus.REFUNDED ||
-        order.paymentStatus ===
-          PaymentStatus.PARTIALLY_REFUNDED;
+        order.paymentStatus === PaymentStatus.REFUNDED ||
+        order.paymentStatus === PaymentStatus.PARTIALLY_REFUNDED;
 
       /*
        * =====================================================
@@ -728,13 +620,8 @@ export async function cancelOrder(
        * =====================================================
        */
 
-      if (
-        paymentNeedsRefund &&
-        !payment
-      ) {
-        throw new Error(
-          "PAYMENT_RECORD_NOT_FOUND",
-        );
+      if (paymentNeedsRefund && !payment) {
+        throw new Error("PAYMENT_RECORD_NOT_FOUND");
       }
 
       /*
@@ -748,14 +635,8 @@ export async function cancelOrder(
        * Therefore DO NOT cancel the order in this situation.
        */
 
-      if (
-        paymentNeedsRefund &&
-        payment &&
-        !payment.providerPaymentId
-      ) {
-        throw new Error(
-          "RAZORPAY_PAYMENT_ID_NOT_FOUND",
-        );
+      if (paymentNeedsRefund && payment && !payment.providerPaymentId) {
+        throw new Error("RAZORPAY_PAYMENT_ID_NOT_FOUND");
       }
 
       /*
@@ -772,9 +653,7 @@ export async function cancelOrder(
 
       if (order.stockReserved) {
         for (const item of order.items) {
-          if (
-            item.variantId === null
-          ) {
+          if (item.variantId === null) {
             continue;
           }
 
@@ -785,8 +664,7 @@ export async function cancelOrder(
 
             data: {
               stock: {
-                increment:
-                  item.quantity,
+                increment: item.quantity,
               },
             },
           });
@@ -809,8 +687,7 @@ export async function cancelOrder(
        * =====================================================
        */
 
-      let nextPaymentStatus =
-        order.paymentStatus;
+      let nextPaymentStatus = order.paymentStatus;
 
       /*
        * A captured payment requires a real Razorpay refund.
@@ -819,24 +696,17 @@ export async function cancelOrder(
        * The actual Razorpay refund request happens after commit.
        */
 
-      if (
-        paymentNeedsRefund &&
-        payment
-      ) {
-        nextPaymentStatus =
-          PaymentStatus.REFUND_PENDING;
+      if (paymentNeedsRefund && payment) {
+        nextPaymentStatus = PaymentStatus.REFUND_PENDING;
 
         refundRequired = {
           paymentId: payment.id,
 
-          providerPaymentId:
-            payment.providerPaymentId!,
+          providerPaymentId: payment.providerPaymentId!,
 
-          amount:
-            Number(payment.amount),
+          amount: Number(payment.amount),
 
-          reason:
-            `Order ${order.orderNumber} cancelled by customer`,
+          reason: `Order ${order.orderNumber} cancelled by customer`,
         };
 
         await tx.payment.update({
@@ -845,36 +715,27 @@ export async function cancelOrder(
           },
 
           data: {
-            status:
-              PaymentStatus.REFUND_PENDING,
+            status: PaymentStatus.REFUND_PENDING,
 
-            refundAmount:
-              payment.amount,
+            refundAmount: payment.amount,
 
-            refundReason:
-              `Order ${order.orderNumber} cancelled by customer`,
+            refundReason: `Order ${order.orderNumber} cancelled by customer`,
           },
         });
-      } else if (
-        refundAlreadyPending
-      ) {
+      } else if (refundAlreadyPending) {
         /*
          * Refund has already been requested.
          *
          * Do not create another refund.
          */
 
-        nextPaymentStatus =
-          PaymentStatus.REFUND_PENDING;
-      } else if (
-        alreadyRefunded
-      ) {
+        nextPaymentStatus = PaymentStatus.REFUND_PENDING;
+      } else if (alreadyRefunded) {
         /*
          * Do not change an already completed refund.
          */
 
-        nextPaymentStatus =
-          order.paymentStatus;
+        nextPaymentStatus = order.paymentStatus;
       }
 
       /*
@@ -883,34 +744,27 @@ export async function cancelOrder(
        * =====================================================
        */
 
-      const updatedOrder =
-        await tx.order.update({
-          where: {
-            id: order.id,
-          },
+      const updatedOrder = await tx.order.update({
+        where: {
+          id: order.id,
+        },
 
-          data: {
-            status:
-              OrderStatus.CANCELLED,
+        data: {
+          status: OrderStatus.CANCELLED,
 
-            paymentStatus:
-              nextPaymentStatus,
+          paymentStatus: nextPaymentStatus,
 
-            stockReserved: false,
-          },
+          stockReserved: false,
+        },
 
-          include:
-            ORDER_INCLUDE,
-        });
+        include: ORDER_INCLUDE,
+      });
 
-      return serializeOrder(
-        updatedOrder,
-      );
+      return serializeOrder(updatedOrder);
     },
 
     {
-      isolationLevel:
-        Prisma.TransactionIsolationLevel.Serializable,
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
 
       timeout: 15000,
     },
@@ -933,13 +787,12 @@ export async function cancelOrder(
 
   if (refundRequired) {
     try {
-      const refund =
-         await initiateRazorpayRefund(
-          refundRequired.paymentId,
-          refundRequired.providerPaymentId,
-          refundRequired.amount,
-          refundRequired.reason,
-        );
+      const refund = await initiateRazorpayRefund(
+        refundRequired.paymentId,
+        refundRequired.providerPaymentId,
+        refundRequired.amount,
+        refundRequired.reason,
+      );
 
       return {
         ...result,
@@ -948,14 +801,10 @@ export async function cancelOrder(
 
         refundPending: true,
 
-        refundId:
-          refund.refundId ?? null,
+        refundId: refund.refundId ?? null,
       };
     } catch (error) {
-      console.error(
-        "ORDER CANCELLATION REFUND ERROR:",
-        error,
-      );
+      console.error("ORDER CANCELLATION REFUND ERROR:", error);
 
       /*
        * The order is already safely cancelled and the DB payment
@@ -973,8 +822,7 @@ export async function cancelOrder(
 
         refundPending: true,
 
-        refundError:
-          "Refund request could not be completed yet",
+        refundError: "Refund request could not be completed yet",
       };
     }
   }
