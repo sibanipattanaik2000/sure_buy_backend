@@ -350,8 +350,15 @@ model Payment {
   signature         String?
   failureCode       String?
   failureMessage    String?
+
+  refundId          String?
+  refundAmount      Decimal?      @db.Decimal(10, 2)
+  refundReason      String?
+  refundedAt        DateTime?
+
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
+
   order             Order         @relation(fields: [orderId], references: [id])
 
   @@index([orderId])
@@ -436,8 +443,10 @@ enum OrderStatus {
 enum PaymentStatus {
   PENDING
   AUTHORIZED
+  PARTIALLY_PAID
   PAID
   FAILED
+  REFUND_PENDING
   REFUNDED
   PARTIALLY_REFUNDED
 }
