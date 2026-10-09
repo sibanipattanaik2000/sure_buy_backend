@@ -16,7 +16,7 @@ import paymentRoutes from "./routes/payment.routes";
 import sellPaymentRoutes from "./routes/sell-payment.routes";
 import adminProductMediaRoutes from "./routes/admin-product-media.routes";
 import adminProductRoutes from "./routes/admin-product.routes";
-
+import openAIFeedRoutes from "./routes/openai-feed.routes";
 import { env } from "./config/env";
 import { notFoundHandler, errorHandler } from "./middleware/error.middleware";
 
@@ -126,7 +126,7 @@ app.use("/api/v1/sell", sellRoutes);
 app.use("/api/v1/payments", paymentRoutes);
 app.use("/api/v1/sell/payments", sellPaymentRoutes);
 app.use("/api/v1/newsletter", newsletterRoutes);
-
+app.use("/api/v1/openai-feed.jsonl", openAIFeedRoutes);
 /**
  * 404 + global error handling
  */
