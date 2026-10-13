@@ -84,6 +84,7 @@ function serializeOrder(order: OrderWithItems) {
     subtotal: decimalToNumber(order.subtotal),
     deliveryAmount: decimalToNumber(order.deliveryAmount),
     discountAmount: decimalToNumber(order.discountAmount),
+    couponCode: order.couponCode,
     totalAmount: decimalToNumber(order.totalAmount),
 
     currency: order.currency,
@@ -353,7 +354,21 @@ export async function createOrder(userId: string, input: CreateOrderInput) {
 
       const deliveryAmount = 0;
 
-      const discountAmount = 0;
+      // Only accept the coupon explicitly supplied with this order.
+      // Prices and totals are calculated from database records above.
+      const couponCode = input.couponCode?.trim().toUpperCase() || null;
+
+      if (couponCode && couponCode !== "SUREDISCOUNT") {
+        throw new Error("INVALID_COUPON");
+      }
+
+      // The discount must not make the order total zero or negative.
+      if (couponCode === "SUREDISCOUNT" && subtotal <= 1000) {
+        throw new Error("COUPON_MINIMUM_NOT_MET");
+      }
+
+      // Flat ₹1,500 per order, applied once.
+      const discountAmount = couponCode === "SUREDISCOUNT" ? 1000 : 0;
 
       const totalAmount = Number(
         (subtotal + deliveryAmount - discountAmount).toFixed(2),
@@ -402,6 +417,8 @@ export async function createOrder(userId: string, input: CreateOrderInput) {
 
           discountAmount,
 
+          couponCode,
+          
           totalAmount,
 
           currency: "INR",

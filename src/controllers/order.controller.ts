@@ -59,33 +59,23 @@ import { createOrderSchema } from "../validators/order.validator";
 //     message,
 //   });
 // }
-function handleOrderError(
-  error: unknown,
-  res: Response,
-  operation: string,
-) {
+function handleOrderError(error: unknown, res: Response, operation: string) {
   console.error(`[${operation}]`, {
     name: error instanceof Error ? error.name : typeof error,
     message: error instanceof Error ? error.message : error,
     stack: error instanceof Error ? error.stack : undefined,
     code:
-      typeof error === "object" &&
-      error !== null &&
-      "code" in error
+      typeof error === "object" && error !== null && "code" in error
         ? (error as { code?: unknown }).code
         : undefined,
     meta:
-      typeof error === "object" &&
-      error !== null &&
-      "meta" in error
+      typeof error === "object" && error !== null && "meta" in error
         ? (error as { meta?: unknown }).meta
         : undefined,
   });
 
   const message =
-    error instanceof Error
-      ? error.message
-      : "Internal server error";
+    error instanceof Error ? error.message : "Internal server error";
 
   const statusByError: Record<string, number> = {
     // Order creation
@@ -102,7 +92,8 @@ function handleOrderError(
     // Order lookup / cancellation
     ORDER_NOT_FOUND: 404,
     ORDER_CANNOT_BE_CANCELLED: 409,
-
+    INVALID_COUPON: 400,
+    COUPON_MINIMUM_NOT_MET: 400,
     // Payment / refund safety
     PAYMENT_RECORD_NOT_FOUND: 409,
     RAZORPAY_PAYMENT_ID_NOT_FOUND: 409,
@@ -116,6 +107,9 @@ function handleOrderError(
 
     RAZORPAY_PAYMENT_ID_NOT_FOUND:
       "The captured payment cannot be refunded safely yet. Please contact support.",
+    INVALID_COUPON: "This coupon code is invalid.",
+    COUPON_MINIMUM_NOT_MET:
+      "SureDISCOUNT requires an order subtotal greater than ₹1,000.",
   };
 
   return res.status(status).json({
@@ -124,15 +118,13 @@ function handleOrderError(
   });
 }
 
-export async function createNewOrder(
-  req: AuthRequest,
-  res: Response,
-) {
+export async function createNewOrder(req: AuthRequest, res: Response) {
   try {
     if (!req.userId) {
       return res.status(401).json({
         success: false,
-        message: "Authentication required, Please login to access this resource",
+        message:
+          "Authentication required, Please login to access this resource",
       });
     }
 
@@ -146,10 +138,7 @@ export async function createNewOrder(
       });
     }
 
-    const order = await createOrder(
-      req.userId,
-      result.data,
-    );
+    const order = await createOrder(req.userId, result.data);
 
     return res.status(201).json({
       success: true,
@@ -157,23 +146,17 @@ export async function createNewOrder(
       data: order,
     });
   } catch (error) {
-    return handleOrderError(
-      error,
-      res,
-      "createNewOrder error",
-    );
+    return handleOrderError(error, res, "createNewOrder error");
   }
 }
 
-export async function listOrders(
-  req: AuthRequest,
-  res: Response,
-) {
+export async function listOrders(req: AuthRequest, res: Response) {
   try {
     if (!req.userId) {
       return res.status(401).json({
         success: false,
-        message: "Authentication required, Please login to access this resource",
+        message:
+          "Authentication required, Please login to access this resource",
       });
     }
 
@@ -184,23 +167,17 @@ export async function listOrders(
       data: orders,
     });
   } catch (error) {
-    return handleOrderError(
-      error,
-      res,
-      "listOrders error",
-    );
+    return handleOrderError(error, res, "listOrders error");
   }
 }
 
-export async function getSingleOrder(
-  req: AuthRequest,
-  res: Response,
-) {
+export async function getSingleOrder(req: AuthRequest, res: Response) {
   try {
     if (!req.userId) {
       return res.status(401).json({
         success: false,
-        message: "Authentication required, Please login to access this resource",
+        message:
+          "Authentication required, Please login to access this resource",
       });
     }
 
@@ -213,33 +190,24 @@ export async function getSingleOrder(
       });
     }
 
-    const order = await getOrderById(
-      req.userId,
-      orderId,
-    );
+    const order = await getOrderById(req.userId, orderId);
 
     return res.status(200).json({
       success: true,
       data: order,
     });
   } catch (error) {
-    return handleOrderError(
-      error,
-      res,
-      "getSingleOrder error",
-    );
+    return handleOrderError(error, res, "getSingleOrder error");
   }
 }
 
-export async function cancelExistingOrder(
-  req: AuthRequest,
-  res: Response,
-) {
+export async function cancelExistingOrder(req: AuthRequest, res: Response) {
   try {
     if (!req.userId) {
       return res.status(401).json({
         success: false,
-        message: "Authentication required, Please login to access this resource",
+        message:
+          "Authentication required, Please login to access this resource",
       });
     }
 
@@ -252,10 +220,7 @@ export async function cancelExistingOrder(
       });
     }
 
-    const order = await cancelOrder(
-      req.userId,
-      orderId,
-    );
+    const order = await cancelOrder(req.userId, orderId);
 
     return res.status(200).json({
       success: true,
@@ -263,10 +228,6 @@ export async function cancelExistingOrder(
       data: order,
     });
   } catch (error) {
-    return handleOrderError(
-      error,
-      res,
-      "cancelExistingOrder error",
-    );
+    return handleOrderError(error, res, "cancelExistingOrder error");
   }
 }

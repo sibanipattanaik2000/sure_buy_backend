@@ -11,6 +11,13 @@ export const createOrderSchema = z.object({
     "CARD",
     "EMI",
   ]),
+
+  couponCode: z
+    .string()
+    .trim()
+    .toUpperCase()
+    .max(40, "Invalid coupon code")
+    .optional(),
 });
 
 export const orderIdSchema = z.object({
