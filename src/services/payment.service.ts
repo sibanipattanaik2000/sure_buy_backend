@@ -270,24 +270,243 @@ const deductedItems: typeof items = [];
  * IMPORTANT:
  * A lost Razorpay response does NOT mean the refund failed.
  */
+// export async function initiateRazorpayRefund(
+//   paymentId: string,
+//   providerPaymentId: string,
+//   amount: number,
+//   reason: string,
+// ) {
+//   /**
+//    * First check the current database state.
+//    */
+//   const payment = await prisma.payment.findUnique({
+//     where: {
+//       id: paymentId,
+//     },
+//     select: {
+//       id: true,
+//       status: true,
+//       refundId: true,
+//       refundAmount: true,
+//     },
+//   });
+
+//   if (!payment) {
+//     throw new Error("PAYMENT_NOT_FOUND");
+//   }
+
+//   /**
+//    * Already terminal.
+//    */
+//   if (
+//     payment.status === PaymentStatus.REFUNDED ||
+//     payment.status === PaymentStatus.PARTIALLY_REFUNDED
+//   ) {
+//     return {
+//       alreadyRefunded: true,
+//       alreadyPending: false,
+//       refundId: payment.refundId,
+//     };
+//   }
+
+//   /**
+//    * Refund request already created.
+//    */
+//   if (
+//     payment.status === PaymentStatus.REFUND_PENDING &&
+//     payment.refundId
+//   ) {
+//     return {
+//       alreadyRefunded: false,
+//       alreadyPending: true,
+//       refundId: payment.refundId,
+//     };
+//   }
+
+//   const refundAmount = toPaise(amount);
+
+//   let refund;
+
+//   try {
+//     refund = await razorpay.payments.refund(providerPaymentId, {
+//       amount: refundAmount,
+//       notes: {
+//         paymentId,
+//         reason,
+//       },
+//     });
+//   } catch (error) {
+//     console.error("RAZORPAY REFUND CREATION ERROR:", error);
+
+//     /**
+//      * IMPORTANT:
+//      *
+//      * Do not mark the refund as failed here.
+//      *
+//      * A timeout/network failure can happen after Razorpay
+//      * has actually created the refund.
+//      *
+//      * The caller keeps the payment in REFUND_PENDING.
+//      */
+//     throw new Error("REFUND_REQUEST_FAILED");
+//   }
+
+//   const refundId = safeString(refund?.id);
+
+//   if (!refundId) {
+//     throw new Error("REFUND_REQUEST_FAILED");
+//   }
+
+//   /**
+//    * ==========================================================
+//    * REFUND WEBHOOK RACE PROTECTION
+//    * ==========================================================
+//    *
+//    * Razorpay may send refund.processed extremely quickly.
+//    *
+//    * Therefore we MUST check the database again after the
+//    * Razorpay API call and before writing REFUND_PENDING.
+//    *
+//    * If the webhook already moved the payment to a terminal
+//    * refund state, never downgrade it back to REFUND_PENDING.
+//    */
+//   const updatedPayment = await prisma.payment.findUnique({
+//     where: {
+//       id: paymentId,
+//     },
+//     select: {
+//       id: true,
+//       status: true,
+//       refundId: true,
+//       refundAmount: true,
+//     },
+//   });
+
+//   if (!updatedPayment) {
+//     throw new Error("PAYMENT_NOT_FOUND");
+//   }
+
+//   /**
+//    * Webhook already completed the refund.
+//    */
+//   if (
+//     updatedPayment.status === PaymentStatus.REFUNDED ||
+//     updatedPayment.status === PaymentStatus.PARTIALLY_REFUNDED
+//   ) {
+//     return {
+//       alreadyRefunded: true,
+//       alreadyPending: false,
+//       refundId:
+//         updatedPayment.refundId ??
+//         refundId,
+//     };
+//   }
+
+//   /**
+//    * Another request may already have stored a refund ID.
+//    */
+//   if (
+//     updatedPayment.status === PaymentStatus.REFUND_PENDING &&
+//     updatedPayment.refundId
+//   ) {
+//     return {
+//       alreadyRefunded: false,
+//       alreadyPending: true,
+//       refundId: updatedPayment.refundId,
+//     };
+//   }
+
+//   /**
+//    * Only now write REFUND_PENDING.
+//    *
+//    * Conditional update prevents a terminal refund state from
+//    * being overwritten if another process changes it between
+//    * the SELECT and UPDATE.
+//    */
+//   const pendingUpdate = await prisma.payment.updateMany({
+//     where: {
+//       id: paymentId,
+//       status: {
+//         notIn: [
+//           PaymentStatus.REFUNDED,
+//           PaymentStatus.PARTIALLY_REFUNDED,
+//         ],
+//       },
+//     },
+//     data: {
+//       status: PaymentStatus.REFUND_PENDING,
+//       refundId,
+//       refundAmount: amount,
+//       refundReason: reason,
+//     },
+//   });
+
+//   /**
+//    * Another process won the race.
+//    */
+//   if (pendingUpdate.count !== 1) {
+//     const latestPayment = await prisma.payment.findUnique({
+//       where: {
+//         id: paymentId,
+//       },
+//       select: {
+//         status: true,
+//         refundId: true,
+//       },
+//     });
+
+//     if (!latestPayment) {
+//       throw new Error("PAYMENT_NOT_FOUND");
+//     }
+
+//     return {
+//       alreadyRefunded:
+//         latestPayment.status === PaymentStatus.REFUNDED ||
+//         latestPayment.status === PaymentStatus.PARTIALLY_REFUNDED,
+//       alreadyPending:
+//         latestPayment.status === PaymentStatus.REFUND_PENDING,
+//       refundId:
+//         latestPayment.refundId ??
+//         refundId,
+//     };
+//   }
+
+//   return {
+//     alreadyRefunded: false,
+//     alreadyPending: false,
+//     refundId,
+//   };
+// }
 export async function initiateRazorpayRefund(
   paymentId: string,
   providerPaymentId: string,
   amount: number,
   reason: string,
 ) {
-  /**
-   * First check the current database state.
-   */
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error("INVALID_PAYMENT_AMOUNT");
+  }
+
+  const amountPaise = toPaise(amount);
+  const normalizedAmount = Number((amountPaise / 100).toFixed(2));
+
+  // Stable key: concurrent calls for the same logical refund
+  // must contend for the same unique database reservation.
+  const requestKey =
+    "pb_" +
+    crypto
+      .createHash("sha256")
+      .update(`${paymentId}:${amountPaise}:${reason.trim()}`)
+      .digest("hex")
+      .slice(0, 40);
+
   const payment = await prisma.payment.findUnique({
-    where: {
-      id: paymentId,
-    },
+    where: { id: paymentId },
     select: {
       id: true,
       status: true,
       refundId: true,
-      refundAmount: true,
+      providerPaymentId: true,
     },
   });
 
@@ -295,9 +514,13 @@ export async function initiateRazorpayRefund(
     throw new Error("PAYMENT_NOT_FOUND");
   }
 
-  /**
-   * Already terminal.
-   */
+  if (
+    payment.providerPaymentId &&
+    payment.providerPaymentId !== providerPaymentId
+  ) {
+    throw new Error("PROVIDER_PAYMENT_MISMATCH");
+  }
+
   if (
     payment.status === PaymentStatus.REFUNDED ||
     payment.status === PaymentStatus.PARTIALLY_REFUNDED
@@ -309,9 +532,7 @@ export async function initiateRazorpayRefund(
     };
   }
 
-  /**
-   * Refund request already created.
-   */
+  // Legacy pending refund with an already recorded Razorpay ID.
   if (
     payment.status === PaymentStatus.REFUND_PENDING &&
     payment.refundId
@@ -323,161 +544,113 @@ export async function initiateRazorpayRefund(
     };
   }
 
-  const refundAmount = toPaise(amount);
+  // Reserve BEFORE calling Razorpay. The unique requestKey means
+  // only one concurrent caller can become the creator.
+  try {
+    await prisma.paymentRefund.create({
+      data: {
+        paymentId,
+        requestKey,
+        amount: normalizedAmount,
+        reason,
+        status: "REQUESTED",
+      },
+    });
+  } catch (error) {
+    const existing = await prisma.paymentRefund.findUnique({
+      where: { requestKey },
+    });
 
-  let refund;
+    if (existing) {
+      return {
+        alreadyRefunded: existing.status === "PROCESSED",
+        alreadyPending: existing.status !== "PROCESSED",
+        refundId: existing.providerRefundId,
+      };
+    }
+
+    // Do not hide unexpected database errors.
+    throw error;
+  }
+
+  let refund: { id?: string } | undefined;
 
   try {
     refund = await razorpay.payments.refund(providerPaymentId, {
-      amount: refundAmount,
+      amount: amountPaise,
       notes: {
         paymentId,
         reason,
+        refundRequestKey: requestKey,
       },
     });
   } catch (error) {
     console.error("RAZORPAY REFUND CREATION ERROR:", error);
 
-    /**
-     * IMPORTANT:
-     *
-     * Do not mark the refund as failed here.
-     *
-     * A timeout/network failure can happen after Razorpay
-     * has actually created the refund.
-     *
-     * The caller keeps the payment in REFUND_PENDING.
-     */
+    // Keep the reservation. A network timeout can happen after
+    // Razorpay created the refund; automatically retrying could
+    // refund the customer twice. Reconcile this request against
+    // Razorpay before attempting another refund.
     throw new Error("REFUND_REQUEST_FAILED");
   }
 
   const refundId = safeString(refund?.id);
 
   if (!refundId) {
+    // Same uncertainty rule: keep the reservation and reconcile.
     throw new Error("REFUND_REQUEST_FAILED");
   }
 
-  /**
-   * ==========================================================
-   * REFUND WEBHOOK RACE PROTECTION
-   * ==========================================================
-   *
-   * Razorpay may send refund.processed extremely quickly.
-   *
-   * Therefore we MUST check the database again after the
-   * Razorpay API call and before writing REFUND_PENDING.
-   *
-   * If the webhook already moved the payment to a terminal
-   * refund state, never downgrade it back to REFUND_PENDING.
-   */
-  const updatedPayment = await prisma.payment.findUnique({
-    where: {
-      id: paymentId,
-    },
-    select: {
-      id: true,
-      status: true,
-      refundId: true,
-      refundAmount: true,
-    },
-  });
-
-  if (!updatedPayment) {
-    throw new Error("PAYMENT_NOT_FOUND");
-  }
-
-  /**
-   * Webhook already completed the refund.
-   */
-  if (
-    updatedPayment.status === PaymentStatus.REFUNDED ||
-    updatedPayment.status === PaymentStatus.PARTIALLY_REFUNDED
-  ) {
-    return {
-      alreadyRefunded: true,
-      alreadyPending: false,
-      refundId:
-        updatedPayment.refundId ??
-        refundId,
-    };
-  }
-
-  /**
-   * Another request may already have stored a refund ID.
-   */
-  if (
-    updatedPayment.status === PaymentStatus.REFUND_PENDING &&
-    updatedPayment.refundId
-  ) {
-    return {
-      alreadyRefunded: false,
-      alreadyPending: true,
-      refundId: updatedPayment.refundId,
-    };
-  }
-
-  /**
-   * Only now write REFUND_PENDING.
-   *
-   * Conditional update prevents a terminal refund state from
-   * being overwritten if another process changes it between
-   * the SELECT and UPDATE.
-   */
-  const pendingUpdate = await prisma.payment.updateMany({
-    where: {
-      id: paymentId,
-      status: {
-        notIn: [
-          PaymentStatus.REFUNDED,
-          PaymentStatus.PARTIALLY_REFUNDED,
-        ],
-      },
-    },
-    data: {
-      status: PaymentStatus.REFUND_PENDING,
-      refundId,
-      refundAmount: amount,
-      refundReason: reason,
-    },
-  });
-
-  /**
-   * Another process won the race.
-   */
-  if (pendingUpdate.count !== 1) {
-    const latestPayment = await prisma.payment.findUnique({
-      where: {
-        id: paymentId,
-      },
-      select: {
-        status: true,
-        refundId: true,
-      },
+  await prisma.$transaction(async (tx) => {
+    const currentRefund = await tx.paymentRefund.findUnique({
+      where: { requestKey },
     });
 
-    if (!latestPayment) {
-      throw new Error("PAYMENT_NOT_FOUND");
+    if (!currentRefund) {
+      throw new Error("REFUND_RESERVATION_NOT_FOUND");
     }
 
-    return {
-      alreadyRefunded:
-        latestPayment.status === PaymentStatus.REFUNDED ||
-        latestPayment.status === PaymentStatus.PARTIALLY_REFUNDED,
-      alreadyPending:
-        latestPayment.status === PaymentStatus.REFUND_PENDING,
-      refundId:
-        latestPayment.refundId ??
-        refundId,
-    };
-  }
+    // The webhook may have processed this refund before the API
+    // response was saved. Never downgrade its status.
+    if (currentRefund.status !== "PROCESSED") {
+      await tx.paymentRefund.update({
+        where: { requestKey },
+        data: {
+          providerRefundId: refundId,
+          status: "REQUESTED",
+        },
+      });
+
+      await tx.payment.updateMany({
+        where: {
+          id: paymentId,
+          status: {
+            notIn: [
+              PaymentStatus.REFUNDED,
+              PaymentStatus.PARTIALLY_REFUNDED,
+            ],
+          },
+        },
+        data: {
+          status: PaymentStatus.REFUND_PENDING,
+          refundId,
+          refundAmount: normalizedAmount,
+          refundReason: reason,
+        },
+      });
+    }
+  });
+
+  const latestRefund = await prisma.paymentRefund.findUnique({
+    where: { requestKey },
+  });
 
   return {
-    alreadyRefunded: false,
-    alreadyPending: false,
-    refundId,
+    alreadyRefunded: latestRefund?.status === "PROCESSED",
+    alreadyPending: latestRefund?.status !== "PROCESSED",
+    refundId: latestRefund?.providerRefundId ?? refundId,
   };
 }
-
 /**
  * ============================================================
  * PROCESS CAPTURED PAYMENT

@@ -462,93 +462,250 @@ async function handlePaymentAuthorized(
  *
  * This is the important terminal success event.
  */
+// async function handleRefundProcessed(refundEntity: any) {
+//   const providerPaymentId = refundEntity?.payment_id;
+
+//   const refundId = refundEntity?.id;
+
+//   const refundAmountPaise = refundEntity?.amount;
+
+//   if (
+//     typeof providerPaymentId !== "string" ||
+//     typeof refundId !== "string" ||
+//     typeof refundAmountPaise !== "number"
+//   ) {
+//     throw new Error("INVALID_REFUND_WEBHOOK");
+//   }
+
+//   const refundAmount = Number((refundAmountPaise / 100).toFixed(2));
+
+//   await prisma.$transaction(
+//     async (tx) => {
+//       const payment = await tx.payment.findFirst({
+//         where: {
+//           providerPaymentId,
+//         },
+//       });
+
+//       if (!payment) {
+//         /*
+//          * Do not fail the webhook indefinitely for a payment
+//          * which is not owned by PhoneBhai.
+//          */
+//         console.warn("Unknown Razorpay refund payment:", providerPaymentId);
+
+//         return;
+//       }
+
+//       const originalAmount = Number(payment.amount);
+
+//       /*
+//        * Razorpay can retry the same webhook.
+//        *
+//        * If this exact refund ID was already processed,
+//        * do nothing again.
+//        */
+//       if (
+//         payment.refundId === refundId &&
+//         (payment.status === PaymentStatus.PARTIALLY_REFUNDED ||
+//           payment.status === PaymentStatus.REFUNDED)
+//       ) {
+//         return;
+//       }
+
+//       /*
+//        * A completed full refund must never be downgraded.
+//        */
+//       if (payment.status === PaymentStatus.REFUNDED) {
+//         return;
+//       }
+
+//       /*
+//        * refundAmount stores the cumulative refunded amount.
+//        *
+//        * REFUND_PENDING may already contain the requested
+//        * refund amount, so for the first processed refund
+//        * we use the actual webhook amount directly.
+//        *
+//        * For a later different partial refund, add the new
+//        * processed amount to the previous cumulative amount.
+//        */
+//       const previousRefundAmount =
+//         payment.status === PaymentStatus.PARTIALLY_REFUNDED
+//           ? Number(payment.refundAmount ?? 0)
+//           : 0;
+
+//       const cumulativeRefundAmount = Number(
+//         (previousRefundAmount + refundAmount).toFixed(2),
+//       );
+
+//       const isFullRefund = cumulativeRefundAmount >= originalAmount;
+
+//       const newStatus = isFullRefund
+//         ? PaymentStatus.REFUNDED
+//         : PaymentStatus.PARTIALLY_REFUNDED;
+
+//       await tx.payment.update({
+//         where: {
+//           id: payment.id,
+//         },
+//         data: {
+//           status: newStatus,
+//           refundId,
+//           refundAmount: cumulativeRefundAmount,
+//           refundedAt: new Date(),
+//         },
+//       });
+
+//       await tx.order.update({
+//         where: {
+//           id: payment.orderId,
+//         },
+
+//         data: {
+//           paymentStatus: newStatus,
+//         },
+//       });
+//     },
+//     {
+//       isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+//     },
+//   );
+// }
+
 async function handleRefundProcessed(refundEntity: any) {
   const providerPaymentId = refundEntity?.payment_id;
-
   const refundId = refundEntity?.id;
-
   const refundAmountPaise = refundEntity?.amount;
+  const notes = refundEntity?.notes;
 
   if (
     typeof providerPaymentId !== "string" ||
     typeof refundId !== "string" ||
-    typeof refundAmountPaise !== "number"
+    !Number.isSafeInteger(refundAmountPaise) ||
+    refundAmountPaise <= 0
   ) {
     throw new Error("INVALID_REFUND_WEBHOOK");
   }
 
   const refundAmount = Number((refundAmountPaise / 100).toFixed(2));
 
+  const noteRequestKey =
+    typeof notes?.refundRequestKey === "string" &&
+    notes.refundRequestKey.startsWith("pb_")
+      ? notes.refundRequestKey
+      : undefined;
+
   await prisma.$transaction(
     async (tx) => {
       const payment = await tx.payment.findFirst({
-        where: {
-          providerPaymentId,
-        },
+        where: { providerPaymentId },
       });
 
       if (!payment) {
-        /*
-         * Do not fail the webhook indefinitely for a payment
-         * which is not owned by PhoneBhai.
-         */
-        console.warn("Unknown Razorpay refund payment:", providerPaymentId);
-
+        console.warn(
+          "Unknown Razorpay refund payment:",
+          providerPaymentId,
+        );
         return;
       }
 
-      const originalAmount = Number(payment.amount);
+      // First identify this exact Razorpay refund. A duplicate
+      // processed event must never add its amount a second time.
+      const existingByProviderId =
+        await tx.paymentRefund.findUnique({
+          where: { providerRefundId: refundId },
+        });
 
-      /*
-       * Razorpay can retry the same webhook.
-       *
-       * If this exact refund ID was already processed,
-       * do nothing again.
-       */
       if (
-        payment.refundId === refundId &&
-        (payment.status === PaymentStatus.PARTIALLY_REFUNDED ||
-          payment.status === PaymentStatus.REFUNDED)
+        existingByProviderId &&
+        existingByProviderId.paymentId !== payment.id
       ) {
+        throw new Error("REFUND_PAYMENT_MISMATCH");
+      }
+
+      if (existingByProviderId?.status === "PROCESSED") {
         return;
       }
 
-      /*
-       * A completed full refund must never be downgraded.
-       */
-      if (payment.status === PaymentStatus.REFUNDED) {
-        return;
+      let refundRecord = existingByProviderId;
+
+      if (!refundRecord && noteRequestKey) {
+        refundRecord = await tx.paymentRefund.findUnique({
+          where: { requestKey: noteRequestKey },
+        });
+
+        if (
+          refundRecord &&
+          refundRecord.paymentId !== payment.id
+        ) {
+          throw new Error("REFUND_REQUEST_PAYMENT_MISMATCH");
+        }
+
+        if (
+          refundRecord?.providerRefundId &&
+          refundRecord.providerRefundId !== refundId
+        ) {
+          throw new Error("REFUND_REQUEST_ID_MISMATCH");
+        }
       }
 
-      /*
-       * refundAmount stores the cumulative refunded amount.
-       *
-       * REFUND_PENDING may already contain the requested
-       * refund amount, so for the first processed refund
-       * we use the actual webhook amount directly.
-       *
-       * For a later different partial refund, add the new
-       * processed amount to the previous cumulative amount.
-       */
-      const previousRefundAmount =
-        payment.status === PaymentStatus.PARTIALLY_REFUNDED
-          ? Number(payment.refundAmount ?? 0)
-          : 0;
+      if (refundRecord) {
+        await tx.paymentRefund.update({
+          where: { id: refundRecord.id },
+          data: {
+            providerRefundId: refundId,
+            amount: refundAmount,
+            status: "PROCESSED",
+            processedAt: new Date(),
+          },
+        });
+      } else {
+        // Supports refunds initiated outside this application too.
+        await tx.paymentRefund.create({
+          data: {
+            paymentId: payment.id,
+            requestKey: `razorpay_${refundId}`,
+            providerRefundId: refundId,
+            amount: refundAmount,
+            status: "PROCESSED",
+            processedAt: new Date(),
+          },
+        });
+      }
+
+      // Calculate from the complete, unique refund ledger rather
+      // than adding to Payment.refundAmount.
+      const refundTotals = await tx.paymentRefund.aggregate({
+        where: {
+          paymentId: payment.id,
+          status: "PROCESSED",
+        },
+        _sum: { amount: true },
+      });
 
       const cumulativeRefundAmount = Number(
-        (previousRefundAmount + refundAmount).toFixed(2),
+        Number(refundTotals._sum.amount ?? 0).toFixed(2),
       );
 
-      const isFullRefund = cumulativeRefundAmount >= originalAmount;
+      const originalAmount = Number(payment.amount);
+      const isFullRefund =
+        cumulativeRefundAmount >= originalAmount;
+
+      if (cumulativeRefundAmount > originalAmount) {
+        console.error("REFUND_TOTAL_EXCEEDS_PAYMENT_AMOUNT", {
+          paymentId: payment.id,
+          originalAmount,
+          cumulativeRefundAmount,
+        });
+      }
 
       const newStatus = isFullRefund
         ? PaymentStatus.REFUNDED
         : PaymentStatus.PARTIALLY_REFUNDED;
 
       await tx.payment.update({
-        where: {
-          id: payment.id,
-        },
+        where: { id: payment.id },
         data: {
           status: newStatus,
           refundId,
@@ -558,13 +715,8 @@ async function handleRefundProcessed(refundEntity: any) {
       });
 
       await tx.order.update({
-        where: {
-          id: payment.orderId,
-        },
-
-        data: {
-          paymentStatus: newStatus,
-        },
+        where: { id: payment.orderId },
+        data: { paymentStatus: newStatus },
       });
     },
     {

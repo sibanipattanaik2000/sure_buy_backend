@@ -186,9 +186,9 @@ model Review {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
-  product          Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
-  user             User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  media            ReviewMedia[]
+  product Product       @relation(fields: [productId], references: [id], onDelete: Cascade)
+  user    User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  media   ReviewMedia[]
 
   @@unique([productId, userId])
   @@index([productId])
@@ -352,20 +352,36 @@ model Payment {
   failureCode       String?
   failureMessage    String?
 
-  refundId          String?
-  refundAmount      Decimal?      @db.Decimal(10, 2)
-  refundReason      String?
-  refundedAt        DateTime?
+  refundId     String?
+  refundAmount Decimal?        @db.Decimal(10, 2)
+  refundReason String?
+  refundedAt   DateTime?
+  refunds      PaymentRefund[]
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
 
-  createdAt         DateTime      @default(now())
-  updatedAt         DateTime      @updatedAt
-
-  order             Order         @relation(fields: [orderId], references: [id])
+  order Order @relation(fields: [orderId], references: [id])
 
   @@index([orderId])
   @@index([status])
   @@index([provider])
   @@index([createdAt])
+}
+
+model PaymentRefund {
+  id               String    @id @default(cuid())
+  paymentId        String
+  requestKey       String    @unique
+  providerRefundId String?   @unique
+  amount           Decimal   @db.Decimal(10, 2)
+  reason           String?
+  status           String    @default("REQUESTED")
+  createdAt        DateTime  @default(now())
+  processedAt      DateTime?
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  @@index([paymentId, status])
 }
 
 model SellRequestMedia {

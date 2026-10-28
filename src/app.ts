@@ -3,7 +3,7 @@ import cors from "cors";
 import helmet from "helmet";
 import cookieParser from "cookie-parser";
 import rateLimit from "express-rate-limit";
-
+import { apiLimiter } from "./middleware/api-rate-limit.middleware";
 import wishlistRoutes from "./routes/wishlist.routes";
 import newsletterRoutes from "./routes/newsletter.routes";
 import authRoutes from "./routes/auth.routes";
@@ -19,7 +19,6 @@ import adminProductRoutes from "./routes/admin-product.routes";
 import openAIFeedRoutes from "./routes/openai-feed.routes";
 import { env } from "./config/env";
 import { notFoundHandler, errorHandler } from "./middleware/error.middleware";
-
 const app = express();
 
 app.use(helmet());
@@ -61,17 +60,17 @@ app.use(
     credentials: true,
   }),
 );
-
-const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  limit: 300,
-  standardHeaders: "draft-8",
-  legacyHeaders: false,
-  message: {
-    success: false,
-    message: "Too many requests. Please try again later.",
-  },
-});
+app.set("trust proxy", 1);
+// const apiLimiter = rateLimit({
+//   windowMs: 15 * 60 * 1000,
+//   limit: 300,
+//   standardHeaders: "draft-8",
+//   legacyHeaders: false,
+//   message: {
+//     success: false,
+//     message: "Too many requests. Please try again later.",
+//   },
+// });
 
 app.use("/api", apiLimiter);
 

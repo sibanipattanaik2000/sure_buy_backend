@@ -1,80 +1,67 @@
 import "dotenv/config";
 import { z } from "zod";
 
-const envSchema = z.object({
-  NODE_ENV: z
-    .enum(["development", "test", "production"])
-    .default("development"),
+const envSchema = z
+  .object({
+    NODE_ENV: z
+      .enum(["development", "test", "production"])
+      .default("development"),
 
-  PORT: z.coerce
-    .number()
-    .int()
-    .positive()
-    .default(5000),
+    PORT: z.coerce.number().int().positive().default(5000),
 
-  FRONTEND_URL: z
-    .string()
-    .url()
-    .default("http://localhost:3000"),
+    FRONTEND_URL: z.string().url().default("http://localhost:3000"),
 
-  DATABASE_URL: z
-    .string()
-    .min(1, "DATABASE_URL is required"),
+    DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
 
-  JWT_SECRET: z
-    .string()
-    .min(32, "JWT_SECRET must be at least 32 characters"),
+    JWT_SECRET: z.string().min(32, "JWT_SECRET must be at least 32 characters"),
 
-  JWT_REFRESH_SECRET: z
-    .string()
-    .min(32, "JWT_REFRESH_SECRET must be at least 32 characters"),
+    JWT_REFRESH_SECRET: z
+      .string()
+      .min(32, "JWT_REFRESH_SECRET must be at least 32 characters"),
 
-  R2_ACCOUNT_ID: z
-    .string()
-    .min(1, "R2_ACCOUNT_ID is required"),
+    R2_ACCOUNT_ID: z.string().min(1, "R2_ACCOUNT_ID is required"),
 
-  R2_ACCESS_KEY_ID: z
-    .string()
-    .min(1, "R2_ACCESS_KEY_ID is required"),
+    R2_ACCESS_KEY_ID: z.string().min(1, "R2_ACCESS_KEY_ID is required"),
 
-  R2_SECRET_ACCESS_KEY: z
-    .string()
-    .min(1, "R2_SECRET_ACCESS_KEY is required"),
+    R2_SECRET_ACCESS_KEY: z.string().min(1, "R2_SECRET_ACCESS_KEY is required"),
 
-  R2_BUCKET_NAME: z
-    .string()
-    .min(1, "R2_BUCKET_NAME is required"),
+    R2_BUCKET_NAME: z.string().min(1, "R2_BUCKET_NAME is required"),
 
-  R2_PUBLIC_BASE_URL: z
-    .string()
-    .url("R2_PUBLIC_BASE_URL must be a valid URL"),
+    R2_PUBLIC_BASE_URL: z
+      .string()
+      .url("R2_PUBLIC_BASE_URL must be a valid URL"),
 
-  RAZORPAY_KEY_ID: z
-    .string()
-    .min(1, "RAZORPAY_KEY_ID is required"),
+    RAZORPAY_KEY_ID: z.string().min(1, "RAZORPAY_KEY_ID is required"),
 
-  RAZORPAY_KEY_SECRET: z
-    .string()
-    .min(1, "RAZORPAY_KEY_SECRET is required"),
+    RAZORPAY_KEY_SECRET: z.string().min(1, "RAZORPAY_KEY_SECRET is required"),
 
-  RAZORPAY_WEBHOOK_SECRET: z
-    .string()
-    .min(1, "RAZORPAY_WEBHOOK_SECRET is required"),
+    RAZORPAY_WEBHOOK_SECRET: z
+      .string()
+      .min(1, "RAZORPAY_WEBHOOK_SECRET is required"),
 
-  // Twilio Verify
-  TWILIO_ACCOUNT_SID: z
-    .string()
-    .min(1, "TWILIO_ACCOUNT_SID is required"),
+    // Twilio Verify
+    TWILIO_ACCOUNT_SID: z.string().min(1, "TWILIO_ACCOUNT_SID is required"),
 
-  TWILIO_AUTH_TOKEN: z
-    .string()
-    .min(1, "TWILIO_AUTH_TOKEN is required"),
+    TWILIO_AUTH_TOKEN: z.string().min(1, "TWILIO_AUTH_TOKEN is required"),
 
-  TWILIO_VERIFY_SERVICE_SID: z
-    .string()
-    .min(1, "TWILIO_VERIFY_SERVICE_SID is required"),
-});
-
+    TWILIO_VERIFY_SERVICE_SID: z
+      .string()
+      .min(1, "TWILIO_VERIFY_SERVICE_SID is required"),
+    UPSTASH_REDIS_REST_URL: z.string().url().optional(),
+    UPSTASH_REDIS_REST_TOKEN: z.string().min(1).optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (
+      value.NODE_ENV === "production" &&
+      (!value.UPSTASH_REDIS_REST_URL || !value.UPSTASH_REDIS_REST_TOKEN)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["UPSTASH_REDIS_REST_URL"],
+        message: "Upstash Redis URL and token are required in production.",
+      });
+    }
+  });
 const parsedEnv = envSchema.safeParse(process.env);
 
 if (!parsedEnv.success) {
