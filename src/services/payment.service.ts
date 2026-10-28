@@ -27,9 +27,7 @@ function toNumber(value: Prisma.Decimal | number): number {
 }
 
 function safeString(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0
-    ? value
-    : undefined;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 /**
@@ -162,7 +160,7 @@ async function deductStockAfterSuccessfulPayment(
    * Every purchasable order must have a variant.
    */
 
-const deductedItems: typeof items = [];
+  const deductedItems: typeof items = [];
 
   for (const item of items) {
     if (item.variantId === null) {
@@ -477,26 +475,32 @@ const deductedItems: typeof items = [];
 //     refundId,
 //   };
 // }
+
 export async function initiateRazorpayRefund(
   paymentId: string,
   providerPaymentId: string,
   amount: number,
   reason: string,
+  operationKey: string,
 ) {
   if (!Number.isFinite(amount) || amount <= 0) {
     throw new Error("INVALID_PAYMENT_AMOUNT");
   }
 
+  if (!operationKey.trim()) {
+    throw new Error("REFUND_OPERATION_KEY_REQUIRED");
+  }
+
   const amountPaise = toPaise(amount);
   const normalizedAmount = Number((amountPaise / 100).toFixed(2));
 
-  // Stable key: concurrent calls for the same logical refund
-  // must contend for the same unique database reservation.
+  // The operation key must remain the same for retries of the
+  // same intended refund, and differ for a genuinely new refund.
   const requestKey =
     "pb_" +
     crypto
       .createHash("sha256")
-      .update(`${paymentId}:${amountPaise}:${reason.trim()}`)
+      .update(`${paymentId}:${operationKey.trim()}`)
       .digest("hex")
       .slice(0, 40);
 
@@ -504,6 +508,7 @@ export async function initiateRazorpayRefund(
     where: { id: paymentId },
     select: {
       id: true,
+      amount: true,
       status: true,
       refundId: true,
       providerPaymentId: true,
@@ -521,10 +526,7 @@ export async function initiateRazorpayRefund(
     throw new Error("PROVIDER_PAYMENT_MISMATCH");
   }
 
-  if (
-    payment.status === PaymentStatus.REFUNDED ||
-    payment.status === PaymentStatus.PARTIALLY_REFUNDED
-  ) {
+  if (payment.status === PaymentStatus.REFUNDED) {
     return {
       alreadyRefunded: true,
       alreadyPending: false,
@@ -532,11 +534,9 @@ export async function initiateRazorpayRefund(
     };
   }
 
-  // Legacy pending refund with an already recorded Razorpay ID.
-  if (
-    payment.status === PaymentStatus.REFUND_PENDING &&
-    payment.refundId
-  ) {
+  // Do not initiate a second refund while an older request is
+  // pending and its provider refund ID is already recorded.
+  if (payment.status === PaymentStatus.REFUND_PENDING && payment.refundId) {
     return {
       alreadyRefunded: false,
       alreadyPending: true,
@@ -544,8 +544,7 @@ export async function initiateRazorpayRefund(
     };
   }
 
-  // Reserve BEFORE calling Razorpay. The unique requestKey means
-  // only one concurrent caller can become the creator.
+  // Reserve the intended refund before contacting Razorpay.
   try {
     await prisma.paymentRefund.create({
       data: {
@@ -569,7 +568,6 @@ export async function initiateRazorpayRefund(
       };
     }
 
-    // Do not hide unexpected database errors.
     throw error;
   }
 
@@ -587,17 +585,14 @@ export async function initiateRazorpayRefund(
   } catch (error) {
     console.error("RAZORPAY REFUND CREATION ERROR:", error);
 
-    // Keep the reservation. A network timeout can happen after
-    // Razorpay created the refund; automatically retrying could
-    // refund the customer twice. Reconcile this request against
-    // Razorpay before attempting another refund.
+    // Do not automatically retry an uncertain external request.
+    // Reconcile it against Razorpay before attempting it again.
     throw new Error("REFUND_REQUEST_FAILED");
   }
 
   const refundId = safeString(refund?.id);
 
   if (!refundId) {
-    // Same uncertainty rule: keep the reservation and reconcile.
     throw new Error("REFUND_REQUEST_FAILED");
   }
 
@@ -610,11 +605,40 @@ export async function initiateRazorpayRefund(
       throw new Error("REFUND_RESERVATION_NOT_FOUND");
     }
 
-    // The webhook may have processed this refund before the API
-    // response was saved. Never downgrade its status.
+    // The webhook might have saved this provider refund first.
+    const providerRefund = await tx.paymentRefund.findUnique({
+      where: { providerRefundId: refundId },
+    });
+
+    if (providerRefund && providerRefund.paymentId !== paymentId) {
+      throw new Error("REFUND_PAYMENT_MISMATCH");
+    }
+
+    if (providerRefund && providerRefund.id !== currentRefund.id) {
+      // The webhook created a separate fallback ledger row
+      // before the API response arrived. Keep that canonical row.
+      if (currentRefund.status === "PROCESSED") {
+        throw new Error("REFUND_LEDGER_CONFLICT");
+      }
+
+      await tx.paymentRefund.delete({
+        where: { id: currentRefund.id },
+      });
+
+      // The webhook has already recorded this refund.
+      return;
+    }
+
+    if (
+      currentRefund.providerRefundId &&
+      currentRefund.providerRefundId !== refundId
+    ) {
+      throw new Error("REFUND_REQUEST_ID_MISMATCH");
+    }
+
     if (currentRefund.status !== "PROCESSED") {
       await tx.paymentRefund.update({
-        where: { requestKey },
+        where: { id: currentRefund.id },
         data: {
           providerRefundId: refundId,
           status: "REQUESTED",
@@ -625,25 +649,25 @@ export async function initiateRazorpayRefund(
         where: {
           id: paymentId,
           status: {
-            notIn: [
-              PaymentStatus.REFUNDED,
-              PaymentStatus.PARTIALLY_REFUNDED,
-            ],
+            not: PaymentStatus.REFUNDED,
           },
         },
         data: {
           status: PaymentStatus.REFUND_PENDING,
           refundId,
-          refundAmount: normalizedAmount,
           refundReason: reason,
         },
       });
     }
   });
 
-  const latestRefund = await prisma.paymentRefund.findUnique({
-    where: { requestKey },
-  });
+  const latestRefund =
+    (await prisma.paymentRefund.findUnique({
+      where: { requestKey },
+    })) ??
+    (await prisma.paymentRefund.findUnique({
+      where: { providerRefundId: refundId },
+    }));
 
   return {
     alreadyRefunded: latestRefund?.status === "PROCESSED",
@@ -651,6 +675,7 @@ export async function initiateRazorpayRefund(
     refundId: latestRefund?.providerRefundId ?? refundId,
   };
 }
+
 /**
  * ============================================================
  * PROCESS CAPTURED PAYMENT
@@ -718,9 +743,7 @@ export async function processCapturedPayment(
           orderId: payment.orderId,
           orderNumber: payment.order.orderNumber,
           paymentId: payment.id,
-          razorpayPaymentId:
-            payment.providerPaymentId ??
-            providerPaymentId,
+          razorpayPaymentId: payment.providerPaymentId ?? providerPaymentId,
           status: payment.status,
         };
       }
@@ -739,9 +762,7 @@ export async function processCapturedPayment(
           orderId: payment.orderId,
           orderNumber: payment.order.orderNumber,
           paymentId: payment.id,
-          razorpayPaymentId:
-            payment.providerPaymentId ??
-            providerPaymentId,
+          razorpayPaymentId: payment.providerPaymentId ?? providerPaymentId,
           status: payment.status,
         };
       }
@@ -763,8 +784,7 @@ export async function processCapturedPayment(
        * refund it.
        */
       if (payment.order.status === OrderStatus.CANCELLED) {
-        const reason =
-          "Payment captured after order cancellation";
+        const reason = "Payment captured after order cancellation";
 
         refundRequired = {
           paymentId: payment.id,
@@ -807,10 +827,7 @@ export async function processCapturedPayment(
        * must result in REFUND_PENDING.
        */
       try {
-        await deductStockAfterSuccessfulPayment(
-          tx,
-          payment.orderId,
-        );
+        await deductStockAfterSuccessfulPayment(tx, payment.orderId);
       } catch (error) {
         const refundableStockErrors = new Set([
           "INSUFFICIENT_STOCK_AFTER_PAYMENT",
@@ -824,8 +841,7 @@ export async function processCapturedPayment(
           error instanceof Error &&
           refundableStockErrors.has(error.message)
         ) {
-          const reason =
-            `Payment captured but order could not be fulfilled: ${error.message}`;
+          const reason = `Payment captured but order could not be fulfilled: ${error.message}`;
 
           refundRequired = {
             paymentId: payment.id,
@@ -881,8 +897,7 @@ export async function processCapturedPayment(
        * UPI/Card/EMI:
        * Full amount captured → PAID
        */
-      const isCod =
-        payment.order.paymentMethod === PaymentMethod.COD;
+      const isCod = payment.order.paymentMethod === PaymentMethod.COD;
 
       const newPaymentStatus = isCod
         ? PaymentStatus.PARTIALLY_PAID
@@ -908,11 +923,7 @@ export async function processCapturedPayment(
         },
       });
 
-      await removePurchasedCartItems(
-        tx,
-        payment.order.userId,
-        payment.orderId,
-      );
+      await removePurchasedCartItems(tx, payment.order.userId, payment.orderId);
 
       return {
         success: true,
@@ -925,8 +936,7 @@ export async function processCapturedPayment(
       };
     },
     {
-      isolationLevel:
-        Prisma.TransactionIsolationLevel.Serializable,
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
       timeout: 15000,
     },
   );
@@ -943,15 +953,14 @@ export async function processCapturedPayment(
         refundRequired.providerPaymentId,
         refundRequired.amount,
         refundRequired.reason,
+        "stock-unavailable",
       );
 
       return {
         ...result,
         refundId: refund.refundId,
         refundRequested: !refund.alreadyRefunded,
-        refundPending:
-          refund.alreadyPending ||
-          false,
+        refundPending: refund.alreadyPending || false,
       };
     } catch (error) {
       console.error("REFUND REQUEST FAILED:", error);
@@ -979,10 +988,7 @@ export async function processCapturedPayment(
  *
  * NEVER changes inventory.
  */
-export async function createRazorpayOrder(
-  userId: string,
-  orderId: string,
-) {
+export async function createRazorpayOrder(userId: string, orderId: string) {
   const order = await prisma.order.findFirst({
     where: {
       id: orderId,
@@ -1022,10 +1028,7 @@ export async function createRazorpayOrder(
       orderId: order.id,
       provider: RAZORPAY_PROVIDER,
       status: {
-        in: [
-          PaymentStatus.PENDING,
-          PaymentStatus.AUTHORIZED,
-        ],
+        in: [PaymentStatus.PENDING, PaymentStatus.AUTHORIZED],
       },
       providerOrderId: {
         not: null,
@@ -1047,9 +1050,7 @@ export async function createRazorpayOrder(
       orderNumber: order.orderNumber,
       razorpayOrderId: existingPayment.providerOrderId,
       amount: toNumber(existingPayment.amount),
-      amountInPaise: toPaise(
-        toNumber(existingPayment.amount),
-      ),
+      amountInPaise: toPaise(toNumber(existingPayment.amount)),
       currency: existingPayment.currency,
       keyId: env.RAZORPAY_KEY_ID,
     };
@@ -1084,10 +1085,7 @@ export async function createRazorpayOrder(
       },
     });
   } catch (error) {
-    console.error(
-      "RAZORPAY ORDER CREATION ERROR:",
-      error,
-    );
+    console.error("RAZORPAY ORDER CREATION ERROR:", error);
 
     throw error;
   }
@@ -1127,11 +1125,7 @@ export async function verifyRazorpayPayment(
   razorpayOrderId: string,
   razorpaySignature: string,
 ) {
-  if (
-    !razorpayPaymentId ||
-    !razorpayOrderId ||
-    !razorpaySignature
-  ) {
+  if (!razorpayPaymentId || !razorpayOrderId || !razorpaySignature) {
     throw new Error("INVALID_PAYMENT_RESPONSE");
   }
 
@@ -1183,46 +1177,25 @@ export async function verifyRazorpayPayment(
    *
    * Never trust the browser amount.
    */
-  const expectedAmountInPaise = toPaise(
-    toNumber(payment.amount),
-  );
+  const expectedAmountInPaise = toPaise(toNumber(payment.amount));
 
   /**
    * Checkout signature.
    */
   const expectedSignature = crypto
-    .createHmac(
-      "sha256",
-      env.RAZORPAY_KEY_SECRET,
-    )
-    .update(
-      `${payment.providerOrderId}|${razorpayPaymentId}`,
-    )
+    .createHmac("sha256", env.RAZORPAY_KEY_SECRET)
+    .update(`${payment.providerOrderId}|${razorpayPaymentId}`)
     .digest("hex");
 
-  const receivedBuffer = Buffer.from(
-    razorpaySignature,
-    "utf8",
-  );
+  const receivedBuffer = Buffer.from(razorpaySignature, "utf8");
 
-  const expectedBuffer = Buffer.from(
-    expectedSignature,
-    "utf8",
-  );
+  const expectedBuffer = Buffer.from(expectedSignature, "utf8");
 
-  if (
-    receivedBuffer.length !==
-    expectedBuffer.length
-  ) {
+  if (receivedBuffer.length !== expectedBuffer.length) {
     throw new Error("INVALID_PAYMENT_SIGNATURE");
   }
 
-  if (
-    !crypto.timingSafeEqual(
-      receivedBuffer,
-      expectedBuffer,
-    )
-  ) {
+  if (!crypto.timingSafeEqual(receivedBuffer, expectedBuffer)) {
     throw new Error("INVALID_PAYMENT_SIGNATURE");
   }
 
@@ -1232,71 +1205,35 @@ export async function verifyRazorpayPayment(
   let razorpayPayment;
 
   try {
-    razorpayPayment =
-      await razorpay.payments.fetch(
-        razorpayPaymentId,
-      );
+    razorpayPayment = await razorpay.payments.fetch(razorpayPaymentId);
   } catch (error) {
-    console.error(
-      "RAZORPAY PAYMENT FETCH ERROR:",
-      error,
-    );
+    console.error("RAZORPAY PAYMENT FETCH ERROR:", error);
 
-    throw new Error(
-      "PAYMENT_VERIFICATION_FAILED",
-    );
+    throw new Error("PAYMENT_VERIFICATION_FAILED");
   }
 
-  if (
-    razorpayPayment.order_id !==
-    payment.providerOrderId
-  ) {
-    throw new Error(
-      "PAYMENT_ORDER_MISMATCH",
-    );
+  if (razorpayPayment.order_id !== payment.providerOrderId) {
+    throw new Error("PAYMENT_ORDER_MISMATCH");
   }
 
-  if (
-    razorpayPayment.amount !==
-    expectedAmountInPaise
-  ) {
-    throw new Error(
-      "PAYMENT_AMOUNT_MISMATCH",
-    );
+  if (razorpayPayment.amount !== expectedAmountInPaise) {
+    throw new Error("PAYMENT_AMOUNT_MISMATCH");
   }
 
-  if (
-    razorpayPayment.currency !==
-    order.currency
-  ) {
-    throw new Error(
-      "PAYMENT_CURRENCY_MISMATCH",
-    );
+  if (razorpayPayment.currency !== order.currency) {
+    throw new Error("PAYMENT_CURRENCY_MISMATCH");
   }
 
   /**
    * Only CAPTURED can consume stock.
    */
-  if (
-    razorpayPayment.status !==
-    "captured"
-  ) {
-    if (
-      razorpayPayment.status ===
-      "authorized"
-    ) {
-      throw new Error(
-        "PAYMENT_NOT_CAPTURED",
-      );
+  if (razorpayPayment.status !== "captured") {
+    if (razorpayPayment.status === "authorized") {
+      throw new Error("PAYMENT_NOT_CAPTURED");
     }
 
-    throw new Error(
-      "PAYMENT_VERIFICATION_FAILED",
-    );
+    throw new Error("PAYMENT_VERIFICATION_FAILED");
   }
 
-  return processCapturedPayment(
-    payment.providerOrderId!,
-    razorpayPaymentId,
-  );
+  return processCapturedPayment(payment.providerOrderId!, razorpayPaymentId);
 }

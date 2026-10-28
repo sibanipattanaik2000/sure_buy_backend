@@ -573,6 +573,8 @@ async function handlePaymentAuthorized(
 //   );
 // }
 
+
+
 async function handleRefundProcessed(refundEntity: any) {
   const providerPaymentId = refundEntity?.payment_id;
   const refundId = refundEntity?.id;
@@ -588,7 +590,9 @@ async function handleRefundProcessed(refundEntity: any) {
     throw new Error("INVALID_REFUND_WEBHOOK");
   }
 
-  const refundAmount = Number((refundAmountPaise / 100).toFixed(2));
+  const refundAmount = Number(
+    (refundAmountPaise / 100).toFixed(2),
+  );
 
   const noteRequestKey =
     typeof notes?.refundRequestKey === "string" &&
@@ -610,44 +614,62 @@ async function handleRefundProcessed(refundEntity: any) {
         return;
       }
 
-      // First identify this exact Razorpay refund. A duplicate
-      // processed event must never add its amount a second time.
-      const existingByProviderId =
-        await tx.paymentRefund.findUnique({
-          where: { providerRefundId: refundId },
-        });
+      let refundRecord = await tx.paymentRefund.findUnique({
+        where: { providerRefundId: refundId },
+      });
 
       if (
-        existingByProviderId &&
-        existingByProviderId.paymentId !== payment.id
+        refundRecord &&
+        refundRecord.paymentId !== payment.id
       ) {
         throw new Error("REFUND_PAYMENT_MISMATCH");
       }
 
-      if (existingByProviderId?.status === "PROCESSED") {
+      // An already processed provider refund is idempotent.
+      if (refundRecord?.status === "PROCESSED") {
         return;
       }
 
-      let refundRecord = existingByProviderId;
+      let requestRecord = noteRequestKey
+        ? await tx.paymentRefund.findUnique({
+            where: { requestKey: noteRequestKey },
+          })
+        : null;
 
-      if (!refundRecord && noteRequestKey) {
-        refundRecord = await tx.paymentRefund.findUnique({
-          where: { requestKey: noteRequestKey },
+      if (
+        requestRecord &&
+        requestRecord.paymentId !== payment.id
+      ) {
+        throw new Error("REFUND_REQUEST_PAYMENT_MISMATCH");
+      }
+
+      if (
+        requestRecord?.providerRefundId &&
+        requestRecord.providerRefundId !== refundId
+      ) {
+        throw new Error("REFUND_REQUEST_ID_MISMATCH");
+      }
+
+      // The API response and webhook may have created two records
+      // for the same Razorpay refund. Keep the provider-ID record.
+      if (
+        refundRecord &&
+        requestRecord &&
+        refundRecord.id !== requestRecord.id
+      ) {
+        if (requestRecord.status === "PROCESSED") {
+          throw new Error("REFUND_LEDGER_CONFLICT");
+        }
+
+        await tx.paymentRefund.delete({
+          where: { id: requestRecord.id },
         });
 
-        if (
-          refundRecord &&
-          refundRecord.paymentId !== payment.id
-        ) {
-          throw new Error("REFUND_REQUEST_PAYMENT_MISMATCH");
-        }
+        requestRecord = null;
+      }
 
-        if (
-          refundRecord?.providerRefundId &&
-          refundRecord.providerRefundId !== refundId
-        ) {
-          throw new Error("REFUND_REQUEST_ID_MISMATCH");
-        }
+      if (!refundRecord && requestRecord) {
+        refundRecord = requestRecord;
       }
 
       if (refundRecord) {
@@ -661,7 +683,7 @@ async function handleRefundProcessed(refundEntity: any) {
           },
         });
       } else {
-        // Supports refunds initiated outside this application too.
+        // Also supports a refund created outside PhoneBhai.
         await tx.paymentRefund.create({
           data: {
             paymentId: payment.id,
@@ -674,8 +696,8 @@ async function handleRefundProcessed(refundEntity: any) {
         });
       }
 
-      // Calculate from the complete, unique refund ledger rather
-      // than adding to Payment.refundAmount.
+      // Calculate the cumulative total from unique, processed
+      // ledger entries instead of incrementing a previous total.
       const refundTotals = await tx.paymentRefund.aggregate({
         where: {
           paymentId: payment.id,
@@ -689,20 +711,17 @@ async function handleRefundProcessed(refundEntity: any) {
       );
 
       const originalAmount = Number(payment.amount);
-      const isFullRefund =
-        cumulativeRefundAmount >= originalAmount;
 
       if (cumulativeRefundAmount > originalAmount) {
-        console.error("REFUND_TOTAL_EXCEEDS_PAYMENT_AMOUNT", {
-          paymentId: payment.id,
-          originalAmount,
-          cumulativeRefundAmount,
-        });
+        // Do not silently claim a valid refund total when the
+        // ledger exceeds the original payment amount.
+        throw new Error("REFUND_TOTAL_EXCEEDS_PAYMENT_AMOUNT");
       }
 
-      const newStatus = isFullRefund
-        ? PaymentStatus.REFUNDED
-        : PaymentStatus.PARTIALLY_REFUNDED;
+      const newStatus =
+        cumulativeRefundAmount >= originalAmount
+          ? PaymentStatus.REFUNDED
+          : PaymentStatus.PARTIALLY_REFUNDED;
 
       await tx.payment.update({
         where: { id: payment.id },
@@ -724,6 +743,8 @@ async function handleRefundProcessed(refundEntity: any) {
     },
   );
 }
+
+
 
 /**
  * ============================================================
