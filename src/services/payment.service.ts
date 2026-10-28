@@ -161,6 +161,9 @@ async function deductStockAfterSuccessfulPayment(
   /**
    * Every purchasable order must have a variant.
    */
+
+const deductedItems: typeof items = [];
+
   for (const item of items) {
     if (item.variantId === null) {
       throw new Error("VARIANT_REQUIRED");
@@ -196,6 +199,7 @@ async function deductStockAfterSuccessfulPayment(
    * WHERE stock >= quantity prevents concurrent
    * purchases from making inventory negative.
    */
+
   for (const item of items) {
     const result = await tx.productVariant.updateMany({
       where: {
@@ -213,8 +217,31 @@ async function deductStockAfterSuccessfulPayment(
     });
 
     if (result.count !== 1) {
+      // Restore earlier deductions before entering the refund flow.
+      // If restoration fails, throw an unexpected error so the
+      // enclosing transaction aborts instead of committing partial stock.
+      for (const deductedItem of [...deductedItems].reverse()) {
+        const restored = await tx.productVariant.updateMany({
+          where: {
+            id: deductedItem.variantId!,
+            productId: deductedItem.productId,
+          },
+          data: {
+            stock: {
+              increment: deductedItem.quantity,
+            },
+          },
+        });
+
+        if (restored.count !== 1) {
+          throw new Error("STOCK_ROLLBACK_FAILED");
+        }
+      }
+
       throw new Error("INSUFFICIENT_STOCK_AFTER_PAYMENT");
     }
+
+    deductedItems.push(item);
   }
 
   await tx.order.update({
