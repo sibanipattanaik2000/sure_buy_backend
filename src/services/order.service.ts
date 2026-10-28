@@ -367,7 +367,7 @@ export async function createOrder(userId: string, input: CreateOrderInput) {
         throw new Error("COUPON_MINIMUM_NOT_MET");
       }
 
-      // Flat ₹1,500 per order, applied once.
+      // Flat ₹1,000 per order, applied once.
       const discountAmount = couponCode === "SUREDISCOUNT" ? 1000 : 0;
 
       const totalAmount = Number(

@@ -1,3 +1,4 @@
+
 import type {
   Request,
   Response,
@@ -5,22 +6,30 @@ import type {
 } from "express";
 
 export function notFoundHandler(
-  req: Request,
+  _req: Request,
   res: Response,
 ) {
   return res.status(404).json({
     success: false,
-    message: `Route not found: ${req.method} ${req.originalUrl}`,
+    message: "API route not found",
   });
 }
 
 export function errorHandler(
   error: unknown,
-  _req: Request,
+  req: Request,
   res: Response,
   _next: NextFunction,
 ) {
-  console.error("UNHANDLED ERROR:", error);
+  // Log a safe summary for diagnostics, not the raw error object.
+  const errorName =
+    error instanceof Error ? error.name : "UnknownError";
+
+  console.error("API request failed", {
+    method: req.method,
+    path: req.path,
+    errorName,
+  });
 
   return res.status(500).json({
     success: false,

@@ -890,6 +890,18 @@ export async function razorpayWebhook(req: Request, res: Response) {
      * - refund initiation when stock is unavailable
      */
 
+    // if (event === "payment.captured") {
+    //   if (typeof razorpayPaymentId !== "string") {
+    //     return res.status(400).json({
+    //       success: false,
+    //       message: "Razorpay payment ID missing",
+    //     });
+    //   }
+
+    //   const result = await processCapturedPayment(
+    //     razorpayOrderId,
+    //     razorpayPaymentId,
+    //   );
     if (event === "payment.captured") {
       if (typeof razorpayPaymentId !== "string") {
         return res.status(400).json({
@@ -898,11 +910,37 @@ export async function razorpayWebhook(req: Request, res: Response) {
         });
       }
 
+      const capturedAmount = paymentEntity?.amount;
+      const capturedCurrency = paymentEntity?.currency;
+
+      const expectedAmountPaise = Math.round(Number(payment.amount) * 100);
+
+      if (
+        typeof capturedAmount !== "number" ||
+        capturedAmount !== expectedAmountPaise ||
+        typeof capturedCurrency !== "string" ||
+        capturedCurrency !== payment.currency
+      ) {
+        console.error("RAZORPAY WEBHOOK AMOUNT/CURRENCY MISMATCH", {
+          paymentId: payment.id,
+          amountMatches:
+            typeof capturedAmount === "number" &&
+            capturedAmount === expectedAmountPaise,
+          currencyMatches:
+            typeof capturedCurrency === "string" &&
+            capturedCurrency === payment.currency,
+        });
+
+        return res.status(400).json({
+          success: false,
+          message: "Captured payment amount or currency mismatch",
+        });
+      }
+
       const result = await processCapturedPayment(
         razorpayOrderId,
         razorpayPaymentId,
       );
-
       /*
        * Payment was captured but stock was unavailable.
        *
