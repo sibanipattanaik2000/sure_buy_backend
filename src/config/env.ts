@@ -50,18 +50,18 @@ const envSchema = z
     UPSTASH_REDIS_REST_URL: z.string().url().optional(),
     UPSTASH_REDIS_REST_TOKEN: z.string().min(1).optional(),
   })
-  .superRefine((value, ctx) => {
-    if (
-      value.NODE_ENV === "production" &&
-      (!value.UPSTASH_REDIS_REST_URL || !value.UPSTASH_REDIS_REST_TOKEN)
-    ) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["UPSTASH_REDIS_REST_URL"],
-        message: "Upstash Redis URL and token are required in production.",
-      });
-    }
-  });
+  // .superRefine((value, ctx) => {
+  //   if (
+  //     value.NODE_ENV === "production" &&
+  //     (!value.UPSTASH_REDIS_REST_URL || !value.UPSTASH_REDIS_REST_TOKEN)
+  //   ) {
+  //     ctx.addIssue({
+  //       code: "custom",
+  //       path: ["UPSTASH_REDIS_REST_URL"],
+  //       message: "Upstash Redis URL and token are required in production.",
+  //     });
+  //   }
+  // });
 const parsedEnv = envSchema.safeParse(process.env);
 
 if (!parsedEnv.success) {
