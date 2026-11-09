@@ -352,15 +352,16 @@ model Payment {
   failureCode       String?
   failureMessage    String?
 
-  refundId     String?
-  refundAmount Decimal?        @db.Decimal(10, 2)
-  refundReason String?
-  refundedAt   DateTime?
-  refunds      PaymentRefund[]
-  createdAt    DateTime        @default(now())
-  updatedAt    DateTime        @updatedAt
-
-  order Order @relation(fields: [orderId], references: [id])
+  refundId         String?
+  refundAmount     Decimal?        @db.Decimal(10, 2)
+  refundReason     String?
+  refundedAt       DateTime?
+  refunds          PaymentRefund[]
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  recordedByUserId String?
+  referenceNote    String?
+  order            Order           @relation(fields: [orderId], references: [id])
 
   @@index([orderId])
   @@index([status])

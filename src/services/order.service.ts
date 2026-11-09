@@ -14,12 +14,10 @@ const ORDER_INCLUDE = {
       id: true,
       productId: true,
       variantId: true,
-
       productName: true,
       brand: true,
       category: true,
       condition: true,
-
       storage: true,
       color: true,
       imageUrl: true,
@@ -56,7 +54,25 @@ const ORDER_INCLUDE = {
       originalPrice: true,
       quantity: true,
       subtotal: true,
+      createdAt: true,
+    },
+  },
 
+  payments: {
+    orderBy: {
+      createdAt: "asc" as const,
+    },
+    select: {
+      id: true,
+      provider: true,
+      providerPaymentId: true,
+      amount: true,
+      currency: true,
+      status: true,
+      method: true,
+      refundAmount: true,
+      refundReason: true,
+      refundedAt: true,
       createdAt: true,
     },
   },
@@ -70,7 +86,52 @@ function decimalToNumber(value: Prisma.Decimal | number): number {
   return Number(value);
 }
 
+/**
+ * Calculates the amount actually retained from successful payments.
+ *
+ * PAID / PARTIALLY_PAID:
+ *   Count the captured payment amount.
+ *
+ * PARTIALLY_REFUNDED:
+ *   Count only the amount remaining after refunds.
+ *
+ * REFUNDED / PENDING / FAILED / REFUND_PENDING:
+ *   Do not count as successfully retained payment.
+ */
+function calculatePaidAmount(order: OrderWithItems): number {
+  const paidInPaise = order.payments.reduce((sum, payment) => {
+    const amountInPaise = Math.round(Number(payment.amount) * 100);
+
+    if (
+      payment.status === PaymentStatus.PAID ||
+      payment.status === PaymentStatus.PARTIALLY_PAID
+    ) {
+      return sum + amountInPaise;
+    }
+
+    if (payment.status === PaymentStatus.PARTIALLY_REFUNDED) {
+      const refundedInPaise = Math.round(
+        Number(payment.refundAmount ?? 0) * 100,
+      );
+
+      return sum + Math.max(0, amountInPaise - refundedInPaise);
+    }
+
+    return sum;
+  }, 0);
+
+  return Number((paidInPaise / 100).toFixed(2));
+}
+
 function serializeOrder(order: OrderWithItems) {
+  const totalAmount = decimalToNumber(order.totalAmount);
+
+  const paidAmount = Math.min(totalAmount, calculatePaidAmount(order));
+
+  const remainingAmount = Number(
+    Math.max(0, totalAmount - paidAmount).toFixed(2),
+  );
+
   return {
     id: order.id,
     orderNumber: order.orderNumber,
@@ -85,9 +146,29 @@ function serializeOrder(order: OrderWithItems) {
     deliveryAmount: decimalToNumber(order.deliveryAmount),
     discountAmount: decimalToNumber(order.discountAmount),
     couponCode: order.couponCode,
-    totalAmount: decimalToNumber(order.totalAmount),
+
+    totalAmount,
+    paidAmount,
+    remainingAmount,
 
     currency: order.currency,
+
+    payments: order.payments.map((payment) => ({
+      id: payment.id,
+      provider: payment.provider,
+      providerPaymentId: payment.providerPaymentId,
+      amount: decimalToNumber(payment.amount),
+      currency: payment.currency,
+      status: payment.status,
+      method: payment.method,
+      refundAmount:
+        payment.refundAmount === null
+          ? 0
+          : decimalToNumber(payment.refundAmount),
+      refundReason: payment.refundReason,
+      refundedAt: payment.refundedAt,
+      createdAt: payment.createdAt,
+    })),
 
     shippingAddress: {
       fullName: order.shippingFullName,
