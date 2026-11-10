@@ -58,7 +58,6 @@ const ORDER_INCLUDE = {
     },
   },
 
-
   payments: {
     orderBy: {
       createdAt: "asc" as const,
@@ -86,7 +85,6 @@ const ORDER_INCLUDE = {
       createdAt: true,
     },
   },
-
 } satisfies Prisma.OrderInclude;
 
 type OrderWithItems = Prisma.OrderGetPayload<{
@@ -113,24 +111,36 @@ function decimalToNumber(value: Prisma.Decimal | number): number {
 function calculatePaidAmount(order: OrderWithItems): number {
   const paidInPaise = order.payments.reduce((sum, payment) => {
     const amountInPaise = Math.round(Number(payment.amount) * 100);
-    const refundAmountInPaise = Math.round(
-      Number(payment.refundAmount ?? 0) * 100,
+
+    const processedRefundsInPaise = Math.round(
+      payment.refunds
+        .filter((refund) => refund.status === "PROCESSED")
+        .reduce((total, refund) => total + Number(refund.amount), 0) * 100,
     );
+
+    let refundedInPaise = processedRefundsInPaise;
+
+    // Support older payment records created before the refund ledger existed.
+    if (
+      processedRefundsInPaise === 0 &&
+      (payment.status === PaymentStatus.PARTIALLY_REFUNDED ||
+        payment.status === PaymentStatus.REFUNDED)
+    ) {
+      refundedInPaise = Math.round(Number(payment.refundAmount ?? 0) * 100);
+
+      if (payment.status === PaymentStatus.REFUNDED && refundedInPaise === 0) {
+        refundedInPaise = amountInPaise;
+      }
+    }
 
     switch (payment.status) {
       case PaymentStatus.PAID:
       case PaymentStatus.PARTIALLY_PAID:
       case PaymentStatus.REFUND_PENDING:
-        // A pending refund has not yet been processed.
-        return sum + amountInPaise;
-
       case PaymentStatus.PARTIALLY_REFUNDED:
-        return sum + Math.max(0, amountInPaise - refundAmountInPaise);
-
       case PaymentStatus.REFUNDED:
-      case PaymentStatus.PENDING:
-      case PaymentStatus.AUTHORIZED:
-      case PaymentStatus.FAILED:
+        return sum + Math.max(0, amountInPaise - refundedInPaise);
+
       default:
         return sum;
     }
@@ -138,7 +148,6 @@ function calculatePaidAmount(order: OrderWithItems): number {
 
   return Number((paidInPaise / 100).toFixed(2));
 }
-
 
 function serializeOrder(order: OrderWithItems) {
   const totalAmount = decimalToNumber(order.totalAmount);
@@ -629,25 +638,25 @@ export async function getUserOrders(userId: string) {
 }
 
 export async function cancelOrder(userId: string, orderId: string) {
-  /*
-   * Refund information is collected inside the transaction,
-   * but the actual Razorpay API call happens AFTER the
-   * transaction commits.
-   *
-   * This prevents a slow/failed Razorpay request from holding
-   * a PostgreSQL transaction open.
-   */
-  let refundRequired:
-    | {
-        paymentId: string;
-        providerPaymentId: string;
-        amount: number;
-        reason: string;
-      }
-    | undefined;
+  type RefundJob = {
+    paymentId: string;
+    providerPaymentId: string;
+    amount: number;
+    reason: string;
+  };
+
+  const refundJobs: RefundJob[] = [];
 
   const result = await prisma.$transaction(
     async (tx) => {
+      // Serialize cancellation against payment capture and cash collection.
+      await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT "id"
+        FROM "Order"
+        WHERE "id" = ${orderId}
+        FOR UPDATE
+      `;
+
       const order = await tx.order.findFirst({
         where: {
           id: orderId,
@@ -657,7 +666,10 @@ export async function cancelOrder(userId: string, orderId: string) {
           items: true,
           payments: {
             orderBy: {
-              createdAt: "desc",
+              createdAt: "asc",
+            },
+            include: {
+              refunds: true,
             },
           },
         },
@@ -676,273 +688,248 @@ export async function cancelOrder(userId: string, orderId: string) {
         throw new Error("ORDER_CANNOT_BE_CANCELLED");
       }
 
-      /*
-       * =====================================================
-       * FIND THE RELEVANT PAYMENT
-       * =====================================================
-       *
-       * The latest payment belonging to this order is used.
-       */
+      const reason = `Order ${order.orderNumber} cancelled by customer`;
 
-      const payment =
-        order.payments.find(
-          (candidate) =>
-            candidate.providerPaymentId &&
-            (candidate.status === PaymentStatus.PAID ||
-              candidate.status === PaymentStatus.PARTIALLY_PAID ||
-              candidate.status === PaymentStatus.REFUND_PENDING ||
-              candidate.status === PaymentStatus.REFUNDED ||
-              candidate.status === PaymentStatus.PARTIALLY_REFUNDED),
-        ) ??
-        order.payments[0] ??
-        null;
+      let hasRefundPending = false;
+      let hasManualCashRefund = false;
+      let hasProcessedRefund = false;
+      let hasCapturedPayment = false;
 
-      /*
-       * =====================================================
-       * DETERMINE WHETHER A REAL REFUND IS REQUIRED
-       * =====================================================
-       *
-       * PAID:
-       *   Full payment was captured.
-       *
-       * PARTIALLY_PAID:
-       *   COD ₹500 advance was captured.
-       *
-       * REFUND_PENDING:
-       *   A refund has already been requested.
-       *
-       * REFUNDED:
-       *   Already completely refunded.
-       *
-       * PARTIALLY_REFUNDED:
-       *   Some amount has already been refunded.
-       */
+      for (const payment of order.payments) {
+        const captured =
+          payment.status === PaymentStatus.PAID ||
+          payment.status === PaymentStatus.PARTIALLY_PAID ||
+          payment.status === PaymentStatus.REFUND_PENDING ||
+          payment.status === PaymentStatus.PARTIALLY_REFUNDED ||
+          payment.status === PaymentStatus.REFUNDED;
 
-      const paymentNeedsRefund =
-        order.paymentStatus === PaymentStatus.PAID ||
-        order.paymentStatus === PaymentStatus.PARTIALLY_PAID;
+        if (!captured) {
+          continue;
+        }
 
-      const refundAlreadyPending =
-        order.paymentStatus === PaymentStatus.REFUND_PENDING;
+        hasCapturedPayment = true;
 
-      const alreadyRefunded =
-        order.paymentStatus === PaymentStatus.REFUNDED ||
-        order.paymentStatus === PaymentStatus.PARTIALLY_REFUNDED;
+        const amount = Number(payment.amount);
 
-      /*
-       * =====================================================
-       * PAID ORDER MUST HAVE A REAL PAYMENT RECORD
-       * =====================================================
-       */
+        const processedRefunds = payment.refunds
+          .filter((refund) => refund.status === "PROCESSED")
+          .reduce((total, refund) => total + Number(refund.amount), 0);
 
-      if (paymentNeedsRefund && !payment) {
-        throw new Error("PAYMENT_RECORD_NOT_FOUND");
+        const legacyRefund =
+          payment.refunds.length === 0 &&
+          (payment.status === PaymentStatus.PARTIALLY_REFUNDED ||
+            payment.status === PaymentStatus.REFUNDED)
+            ? Number(payment.refundAmount ?? 0) ||
+              (payment.status === PaymentStatus.REFUNDED ? amount : 0)
+            : 0;
+
+        const alreadyRefunded = Math.max(processedRefunds, legacyRefund);
+
+        const pendingRefund =
+          payment.status === PaymentStatus.REFUND_PENDING ||
+          payment.refunds.some(
+            (refund) =>
+              refund.status === "REQUESTED" ||
+              refund.status === "MANUAL_PENDING",
+          );
+
+        if (alreadyRefunded > 0) {
+          hasProcessedRefund = true;
+        }
+
+        if (pendingRefund) {
+          hasRefundPending = true;
+
+          if (payment.provider === "CASH") {
+            hasManualCashRefund = true;
+          }
+
+          continue;
+        }
+
+        const refundableAmount = Number(
+          Math.max(0, amount - alreadyRefunded).toFixed(2),
+        );
+
+        if (refundableAmount <= 0) {
+          continue;
+        }
+
+        if (payment.provider === "RAZORPAY") {
+          if (!payment.providerPaymentId) {
+            throw new Error("RAZORPAY_PAYMENT_ID_NOT_FOUND");
+          }
+
+          // Mark it pending inside the transaction. The actual
+          // provider request happens only after this transaction commits.
+          await tx.payment.update({
+            where: {
+              id: payment.id,
+            },
+            data: {
+              status: PaymentStatus.REFUND_PENDING,
+              refundId: null,
+              refundReason: reason,
+            },
+          });
+
+          refundJobs.push({
+            paymentId: payment.id,
+            providerPaymentId: payment.providerPaymentId,
+            amount: refundableAmount,
+            reason,
+          });
+
+          hasRefundPending = true;
+          continue;
+        }
+
+        if (payment.provider === "CASH") {
+          // Cash must be returned manually. Never call Razorpay with
+          // a synthetic CASH-* payment reference.
+          const requestKey = `manual_cash_refund_${order.id}_${payment.id}`;
+
+          await tx.paymentRefund.create({
+            data: {
+              paymentId: payment.id,
+              requestKey,
+              amount: refundableAmount,
+              reason: `${reason} - manual cash refund`,
+              status: "MANUAL_PENDING",
+            },
+          });
+
+          await tx.payment.update({
+            where: {
+              id: payment.id,
+            },
+            data: {
+              status: PaymentStatus.REFUND_PENDING,
+              refundReason: `${reason} - manual cash refund`,
+            },
+          });
+
+          hasRefundPending = true;
+          hasManualCashRefund = true;
+        }
       }
 
-      /*
-       * =====================================================
-       * PAID ORDER MUST HAVE RAZORPAY PAYMENT ID
-       * =====================================================
-       *
-       * Without providerPaymentId we cannot safely create
-       * a Razorpay refund.
-       *
-       * Therefore DO NOT cancel the order in this situation.
-       */
-
-      if (paymentNeedsRefund && payment && !payment.providerPaymentId) {
-        throw new Error("RAZORPAY_PAYMENT_ID_NOT_FOUND");
-      }
-
-      /*
-       * =====================================================
-       * RESTORE STOCK
-       * =====================================================
-       *
-       * Stock is restored ONLY if this order previously
-       * deducted stock.
-       *
-       * stockReserved=true means the payment was successfully
-       * processed and stock was decremented.
-       */
-
+      // Restore stock exactly once.
       if (order.stockReserved) {
         for (const item of order.items) {
           if (item.variantId === null) {
             continue;
           }
 
-          await tx.productVariant.update({
+          const restored = await tx.productVariant.updateMany({
             where: {
               id: item.variantId,
+              productId: item.productId,
             },
-
             data: {
               stock: {
                 increment: item.quantity,
               },
             },
           });
+
+          if (restored.count !== 1) {
+            throw new Error("STOCK_RESTORE_FAILED");
+          }
         }
-
-        await tx.order.update({
-          where: {
-            id: order.id,
-          },
-
-          data: {
-            stockReserved: false,
-          },
-        });
       }
-
-      /*
-       * =====================================================
-       * PAYMENT STATE
-       * =====================================================
-       */
 
       let nextPaymentStatus = order.paymentStatus;
 
-      /*
-       * A captured payment requires a real Razorpay refund.
-       *
-       * We mark REFUND_PENDING inside the transaction first.
-       * The actual Razorpay refund request happens after commit.
-       */
-
-      if (paymentNeedsRefund && payment) {
+      if (hasRefundPending) {
         nextPaymentStatus = PaymentStatus.REFUND_PENDING;
-
-        refundRequired = {
-          paymentId: payment.id,
-
-          providerPaymentId: payment.providerPaymentId!,
-
-          amount: Number(payment.amount),
-
-          reason: `Order ${order.orderNumber} cancelled by customer`,
-        };
-
-        await tx.payment.update({
-          where: {
-            id: payment.id,
-          },
-
-          data: {
-            status: PaymentStatus.REFUND_PENDING,
-
-            refundAmount: payment.amount,
-
-            refundReason: `Order ${order.orderNumber} cancelled by customer`,
-            
-          },
+      } else if (hasCapturedPayment) {
+        const refreshedOrder = await tx.order.findUnique({
+          where: { id: order.id },
+          include: ORDER_INCLUDE,
         });
-      } else if (refundAlreadyPending) {
-        /*
-         * Refund has already been requested.
-         *
-         * Do not create another refund.
-         */
 
-        nextPaymentStatus = PaymentStatus.REFUND_PENDING;
-      } else if (alreadyRefunded) {
-        /*
-         * Do not change an already completed refund.
-         */
+        if (!refreshedOrder) {
+          throw new Error("ORDER_NOT_FOUND");
+        }
 
-        nextPaymentStatus = order.paymentStatus;
+        const retainedAmount = calculatePaidAmount(
+          refreshedOrder as OrderWithItems,
+        );
+
+        if (retainedAmount <= 0) {
+          nextPaymentStatus = PaymentStatus.REFUNDED;
+        } else if (hasProcessedRefund) {
+          nextPaymentStatus = PaymentStatus.PARTIALLY_REFUNDED;
+        }
       }
-
-      /*
-       * =====================================================
-       * CANCEL ORDER
-       * =====================================================
-       */
 
       const updatedOrder = await tx.order.update({
         where: {
           id: order.id,
         },
-
         data: {
           status: OrderStatus.CANCELLED,
-
           paymentStatus: nextPaymentStatus,
-
           stockReserved: false,
         },
-
         include: ORDER_INCLUDE,
       });
 
-      return serializeOrder(updatedOrder);
+      return {
+        order: serializeOrder(updatedOrder),
+        manualCashRefundPending: hasManualCashRefund,
+        refundPending: hasRefundPending,
+      };
     },
-
     {
       isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-
-      timeout: 15000,
+      timeout: 20000,
     },
   );
 
-  /*
-   * ==========================================================
-   * RAZORPAY REFUND
-   * ==========================================================
-   *
-   * IMPORTANT:
-   *
-   * This is intentionally OUTSIDE the database transaction.
-   *
-   * If Razorpay is temporarily unavailable, the order remains
-   * cancelled and the payment remains REFUND_PENDING.
-   *
-   * It is NOT falsely marked REFUNDED.
-   */
+  // Contact Razorpay only after the database transaction has committed.
+  const refundResults: Array<{
+    paymentId: string;
+    success: boolean;
+    refundId?: string | null;
+  }> = [];
 
-  if (refundRequired) {
+  for (const job of refundJobs) {
     try {
       const refund = await initiateRazorpayRefund(
-        refundRequired.paymentId,
-        refundRequired.providerPaymentId,
-        refundRequired.amount,
-        refundRequired.reason,
-        `order-cancel-${refundRequired.paymentId}`,
+        job.paymentId,
+        job.providerPaymentId,
+        job.amount,
+        job.reason,
+        `order-cancel-${orderId}-${job.paymentId}`,
       );
 
-      return {
-        ...result,
-
-        refundRequested: true,
-
-        refundPending: true,
-
+      refundResults.push({
+        paymentId: job.paymentId,
+        success: true,
         refundId: refund.refundId ?? null,
-      };
+      });
     } catch (error) {
-      console.error("ORDER CANCELLATION REFUND ERROR:", error);
+      // Keep the payment REFUND_PENDING. Do not automatically
+      // issue another refund after an ambiguous provider failure.
+      console.error("ORDER CANCELLATION REFUND ERROR:", {
+        orderId,
+        paymentId: job.paymentId,
+        error,
+      });
 
-      /*
-       * The order is already safely cancelled and the DB payment
-       * is still REFUND_PENDING.
-       *
-       * Do NOT change it to REFUNDED.
-       *
-       * A retry/reconciliation mechanism can process this later.
-       */
-
-      return {
-        ...result,
-
-        refundRequested: false,
-
-        refundPending: true,
-
-        refundError: "Refund request could not be completed yet",
-      };
+      refundResults.push({
+        paymentId: job.paymentId,
+        success: false,
+      });
     }
   }
 
-  return result;
+  return {
+    ...result.order,
+    refundPending: result.refundPending,
+    manualCashRefundPending: result.manualCashRefundPending,
+    refundResults,
+  };
 }
