@@ -1,12 +1,10 @@
+
 import type { Request, Response } from "express";
-
 import crypto from "crypto";
-
 import { PaymentStatus, Prisma } from "@prisma/client";
 
 import { env } from "../config/env";
 import { prisma } from "../config/prisma";
-
 import type { AuthRequest } from "../middleware/auth.middleware";
 
 import {
@@ -16,14 +14,9 @@ import {
 } from "../services/payment.service";
 
 /**
- * ============================================================
  * CREATE RAZORPAY ORDER
- * ============================================================
- *
- * POST
- * /api/v1/payments/orders/:orderId
+ * POST /api/v1/payments/orders/:orderId
  */
-
 export async function createPaymentOrder(req: AuthRequest, res: Response) {
   try {
     if (!req.userId) {
@@ -88,14 +81,9 @@ export async function createPaymentOrder(req: AuthRequest, res: Response) {
 }
 
 /**
- * ============================================================
  * VERIFY RAZORPAY CHECKOUT PAYMENT
- * ============================================================
- *
- * POST
- * /api/v1/payments/orders/:orderId/verify
+ * POST /api/v1/payments/orders/:orderId/verify
  */
-
 export async function verifyPayment(req: AuthRequest, res: Response) {
   try {
     if (!req.userId) {
@@ -114,7 +102,11 @@ export async function verifyPayment(req: AuthRequest, res: Response) {
       });
     }
 
-    const { razorpayPaymentId, razorpayOrderId, razorpaySignature } = req.body;
+    const {
+      razorpayPaymentId,
+      razorpayOrderId,
+      razorpaySignature,
+    } = req.body;
 
     if (
       typeof razorpayPaymentId !== "string" ||
@@ -135,12 +127,6 @@ export async function verifyPayment(req: AuthRequest, res: Response) {
       razorpaySignature,
     );
 
-    /*
-     * Payment was captured but stock became unavailable.
-     *
-     * The service has already moved the payment to
-     * REFUND_PENDING and attempted the Razorpay refund.
-     */
     if (result.status === PaymentStatus.REFUND_PENDING) {
       return res.status(200).json({
         success: false,
@@ -269,11 +255,8 @@ export async function verifyPayment(req: AuthRequest, res: Response) {
 }
 
 /**
- * ============================================================
- * RAZORPAY WEBHOOK SIGNATURE
- * ============================================================
+ * VERIFY RAZORPAY WEBHOOK SIGNATURE
  */
-
 function verifyWebhookSignature(req: Request): boolean {
   const signature = req.headers["x-razorpay-signature"];
 
@@ -287,7 +270,6 @@ function verifyWebhookSignature(req: Request): boolean {
     .digest("hex");
 
   const receivedBuffer = Buffer.from(signature, "utf8");
-
   const expectedBuffer = Buffer.from(expectedSignature, "utf8");
 
   if (receivedBuffer.length !== expectedBuffer.length) {
@@ -298,11 +280,141 @@ function verifyWebhookSignature(req: Request): boolean {
 }
 
 /**
- * ============================================================
- * PAYMENT FAILED
- * ============================================================
+ * RECALCULATE ORDER PAYMENT STATUS
+ *
+ * Calculates the order's payment status using all payment
+ * transactions and processed refund ledger entries.
  */
+async function recalculateOrderPaymentStatus(
+  tx: Prisma.TransactionClient,
+  orderId: string,
+): Promise<PaymentStatus> {
+  const order = await tx.order.findUnique({
+    where: { id: orderId },
+    select: { totalAmount: true },
+  });
 
+  if (!order) {
+    throw new Error("ORDER_NOT_FOUND");
+  }
+
+  const payments = await tx.payment.findMany({
+    where: { orderId },
+    include: {
+      refunds: {
+        select: {
+          amount: true,
+          status: true,
+        },
+      },
+    },
+  });
+
+  let collectedInPaise = 0;
+
+  for (const payment of payments) {
+    const amountInPaise = Math.round(Number(payment.amount) * 100);
+
+    const countsAsCollected =
+      payment.status === PaymentStatus.PAID ||
+      payment.status === PaymentStatus.PARTIALLY_PAID ||
+      payment.status === PaymentStatus.REFUND_PENDING ||
+      payment.status === PaymentStatus.PARTIALLY_REFUNDED;
+
+    if (!countsAsCollected) {
+      continue;
+    }
+
+    const processedRefundsInPaise = payment.refunds
+      .filter((refund) => refund.status === "PROCESSED")
+      .reduce(
+        (sum, refund) =>
+          sum + Math.round(Number(refund.amount) * 100),
+        0,
+      );
+
+    let refundedInPaise = processedRefundsInPaise;
+
+    // Fallback for older records without refund ledger entries.
+    if (
+      processedRefundsInPaise === 0 &&
+      payment.status === PaymentStatus.PARTIALLY_REFUNDED
+    ) {
+      refundedInPaise = Math.round(
+        Number(payment.refundAmount ?? 0) * 100,
+      );
+    }
+
+    collectedInPaise += Math.max(
+      0,
+      amountInPaise - refundedInPaise,
+    );
+  }
+
+  const totalInPaise = Math.round(Number(order.totalAmount) * 100);
+
+  let nextStatus: PaymentStatus;
+
+  if (
+    payments.some(
+      (payment) => payment.status === PaymentStatus.REFUND_PENDING,
+    )
+  ) {
+    nextStatus = PaymentStatus.REFUND_PENDING;
+  } else if (collectedInPaise >= totalInPaise && totalInPaise > 0) {
+    nextStatus = PaymentStatus.PAID;
+  } else if (collectedInPaise > 0) {
+    nextStatus = PaymentStatus.PARTIALLY_PAID;
+  } else if (
+    payments.some(
+      (payment) => payment.status === PaymentStatus.AUTHORIZED,
+    )
+  ) {
+    nextStatus = PaymentStatus.AUTHORIZED;
+  } else if (
+    payments.some(
+      (payment) => payment.status === PaymentStatus.PENDING,
+    )
+  ) {
+    nextStatus = PaymentStatus.PENDING;
+  } else if (
+    payments.some(
+      (payment) =>
+        payment.status === PaymentStatus.REFUNDED ||
+        payment.status === PaymentStatus.PARTIALLY_REFUNDED,
+    ) &&
+    !payments.some(
+      (payment) =>
+        payment.status === PaymentStatus.PAID ||
+        payment.status === PaymentStatus.PARTIALLY_PAID ||
+        payment.status === PaymentStatus.REFUND_PENDING,
+    )
+  ) {
+    nextStatus = PaymentStatus.REFUNDED;
+  } else if (
+    payments.some(
+      (payment) => payment.status === PaymentStatus.FAILED,
+    )
+  ) {
+    nextStatus = PaymentStatus.FAILED;
+  } else {
+    nextStatus = PaymentStatus.PENDING;
+  }
+
+  await tx.order.update({
+    where: { id: orderId },
+    data: { paymentStatus: nextStatus },
+  });
+
+  return nextStatus;
+}
+
+/**
+ * PAYMENT FAILED
+ *
+ * Never downgrade an already successful or refund-related payment.
+ * Failed payment attempts must not change stock.
+ */
 async function handlePaymentFailed(
   paymentId: string,
   razorpayPaymentId: unknown,
@@ -311,19 +423,13 @@ async function handlePaymentFailed(
   await prisma.$transaction(
     async (tx) => {
       const currentPayment = await tx.payment.findUnique({
-        where: {
-          id: paymentId,
-        },
+        where: { id: paymentId },
       });
 
       if (!currentPayment) {
         return;
       }
 
-      /*
-       * Never downgrade a payment which has already
-       * successfully captured or entered refund flow.
-       */
       if (
         currentPayment.status === PaymentStatus.PAID ||
         currentPayment.status === PaymentStatus.PARTIALLY_PAID ||
@@ -335,23 +441,17 @@ async function handlePaymentFailed(
       }
 
       await tx.payment.update({
-        where: {
-          id: paymentId,
-        },
-
+        where: { id: paymentId },
         data: {
           status: PaymentStatus.FAILED,
-
           providerPaymentId:
             typeof razorpayPaymentId === "string"
               ? razorpayPaymentId
               : undefined,
-
           failureCode:
             typeof paymentEntity?.error_code === "string"
               ? paymentEntity.error_code
               : null,
-
           failureMessage:
             typeof paymentEntity?.error_description === "string"
               ? paymentEntity.error_description
@@ -359,15 +459,10 @@ async function handlePaymentFailed(
         },
       });
 
-      await tx.order.update({
-        where: {
-          id: currentPayment.orderId,
-        },
-
-        data: {
-          paymentStatus: PaymentStatus.FAILED,
-        },
-      });
+      await recalculateOrderPaymentStatus(
+        tx,
+        currentPayment.orderId,
+      );
     },
     {
       isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
@@ -376,19 +471,11 @@ async function handlePaymentFailed(
 }
 
 /**
- * ============================================================
  * PAYMENT AUTHORIZED
- * ============================================================
  *
- * IMPORTANT:
- *
- * Authorized is NOT captured.
- *
- * Therefore:
- *
- * NO STOCK DEDUCTION.
+ * Authorization is not capture.
+ * No stock deduction takes place here.
  */
-
 async function handlePaymentAuthorized(
   paymentId: string,
   razorpayPaymentId: unknown,
@@ -396,33 +483,21 @@ async function handlePaymentAuthorized(
   await prisma.$transaction(
     async (tx) => {
       const currentPayment = await tx.payment.findUnique({
-        where: {
-          id: paymentId,
-        },
+        where: { id: paymentId },
       });
 
       if (!currentPayment) {
         return;
       }
 
-      /*
-       * Only PENDING -> AUTHORIZED.
-       *
-       * This prevents a late authorized webhook from
-       * overwriting PAID / REFUND_PENDING / REFUNDED.
-       */
       if (currentPayment.status !== PaymentStatus.PENDING) {
         return;
       }
 
       await tx.payment.update({
-        where: {
-          id: paymentId,
-        },
-
+        where: { id: paymentId },
         data: {
           status: PaymentStatus.AUTHORIZED,
-
           providerPaymentId:
             typeof razorpayPaymentId === "string"
               ? razorpayPaymentId
@@ -430,15 +505,10 @@ async function handlePaymentAuthorized(
         },
       });
 
-      await tx.order.update({
-        where: {
-          id: currentPayment.orderId,
-        },
-
-        data: {
-          paymentStatus: PaymentStatus.AUTHORIZED,
-        },
-      });
+      await recalculateOrderPaymentStatus(
+        tx,
+        currentPayment.orderId,
+      );
     },
     {
       isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
@@ -447,134 +517,11 @@ async function handlePaymentAuthorized(
 }
 
 /**
- * ============================================================
- * REFUND WEBHOOK
- * ============================================================
+ * REFUND PROCESSED
  *
- * Razorpay refund events do not contain the PhoneBhai order ID
- * directly. They contain the original Razorpay payment ID.
- *
- * We therefore locate the Payment using providerPaymentId.
+ * Uses the refund ledger to avoid counting duplicate webhook
+ * deliveries more than once.
  */
-
-/**
- * refund.processed
- *
- * This is the important terminal success event.
- */
-// async function handleRefundProcessed(refundEntity: any) {
-//   const providerPaymentId = refundEntity?.payment_id;
-
-//   const refundId = refundEntity?.id;
-
-//   const refundAmountPaise = refundEntity?.amount;
-
-//   if (
-//     typeof providerPaymentId !== "string" ||
-//     typeof refundId !== "string" ||
-//     typeof refundAmountPaise !== "number"
-//   ) {
-//     throw new Error("INVALID_REFUND_WEBHOOK");
-//   }
-
-//   const refundAmount = Number((refundAmountPaise / 100).toFixed(2));
-
-//   await prisma.$transaction(
-//     async (tx) => {
-//       const payment = await tx.payment.findFirst({
-//         where: {
-//           providerPaymentId,
-//         },
-//       });
-
-//       if (!payment) {
-//         /*
-//          * Do not fail the webhook indefinitely for a payment
-//          * which is not owned by PhoneBhai.
-//          */
-//         console.warn("Unknown Razorpay refund payment:", providerPaymentId);
-
-//         return;
-//       }
-
-//       const originalAmount = Number(payment.amount);
-
-//       /*
-//        * Razorpay can retry the same webhook.
-//        *
-//        * If this exact refund ID was already processed,
-//        * do nothing again.
-//        */
-//       if (
-//         payment.refundId === refundId &&
-//         (payment.status === PaymentStatus.PARTIALLY_REFUNDED ||
-//           payment.status === PaymentStatus.REFUNDED)
-//       ) {
-//         return;
-//       }
-
-//       /*
-//        * A completed full refund must never be downgraded.
-//        */
-//       if (payment.status === PaymentStatus.REFUNDED) {
-//         return;
-//       }
-
-//       /*
-//        * refundAmount stores the cumulative refunded amount.
-//        *
-//        * REFUND_PENDING may already contain the requested
-//        * refund amount, so for the first processed refund
-//        * we use the actual webhook amount directly.
-//        *
-//        * For a later different partial refund, add the new
-//        * processed amount to the previous cumulative amount.
-//        */
-//       const previousRefundAmount =
-//         payment.status === PaymentStatus.PARTIALLY_REFUNDED
-//           ? Number(payment.refundAmount ?? 0)
-//           : 0;
-
-//       const cumulativeRefundAmount = Number(
-//         (previousRefundAmount + refundAmount).toFixed(2),
-//       );
-
-//       const isFullRefund = cumulativeRefundAmount >= originalAmount;
-
-//       const newStatus = isFullRefund
-//         ? PaymentStatus.REFUNDED
-//         : PaymentStatus.PARTIALLY_REFUNDED;
-
-//       await tx.payment.update({
-//         where: {
-//           id: payment.id,
-//         },
-//         data: {
-//           status: newStatus,
-//           refundId,
-//           refundAmount: cumulativeRefundAmount,
-//           refundedAt: new Date(),
-//         },
-//       });
-
-//       await tx.order.update({
-//         where: {
-//           id: payment.orderId,
-//         },
-
-//         data: {
-//           paymentStatus: newStatus,
-//         },
-//       });
-//     },
-//     {
-//       isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-//     },
-//   );
-// }
-
-
-
 async function handleRefundProcessed(refundEntity: any) {
   const providerPaymentId = refundEntity?.payment_id;
   const refundId = refundEntity?.id;
@@ -625,7 +572,6 @@ async function handleRefundProcessed(refundEntity: any) {
         throw new Error("REFUND_PAYMENT_MISMATCH");
       }
 
-      // An already processed provider refund is idempotent.
       if (refundRecord?.status === "PROCESSED") {
         return;
       }
@@ -650,8 +596,6 @@ async function handleRefundProcessed(refundEntity: any) {
         throw new Error("REFUND_REQUEST_ID_MISMATCH");
       }
 
-      // The API response and webhook may have created two records
-      // for the same Razorpay refund. Keep the provider-ID record.
       if (
         refundRecord &&
         requestRecord &&
@@ -683,7 +627,6 @@ async function handleRefundProcessed(refundEntity: any) {
           },
         });
       } else {
-        // Also supports a refund created outside PhoneBhai.
         await tx.paymentRefund.create({
           data: {
             paymentId: payment.id,
@@ -696,8 +639,6 @@ async function handleRefundProcessed(refundEntity: any) {
         });
       }
 
-      // Calculate the cumulative total from unique, processed
-      // ledger entries instead of incrementing a previous total.
       const refundTotals = await tx.paymentRefund.aggregate({
         where: {
           paymentId: payment.id,
@@ -713,8 +654,6 @@ async function handleRefundProcessed(refundEntity: any) {
       const originalAmount = Number(payment.amount);
 
       if (cumulativeRefundAmount > originalAmount) {
-        // Do not silently claim a valid refund total when the
-        // ledger exceeds the original payment amount.
         throw new Error("REFUND_TOTAL_EXCEEDS_PAYMENT_AMOUNT");
       }
 
@@ -733,10 +672,10 @@ async function handleRefundProcessed(refundEntity: any) {
         },
       });
 
-      await tx.order.update({
-        where: { id: payment.orderId },
-        data: { paymentStatus: newStatus },
-      });
+      await recalculateOrderPaymentStatus(
+        tx,
+        payment.orderId,
+      );
     },
     {
       isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
@@ -744,31 +683,14 @@ async function handleRefundProcessed(refundEntity: any) {
   );
 }
 
-
-
 /**
- * ============================================================
  * REFUND FAILED
- * ============================================================
  *
- * We intentionally KEEP REFUND_PENDING.
- *
- * Why?
- *
- * There is no REFUND_FAILED state in the current Prisma enum.
- *
- * More importantly, a failed webhook should not make the system
- * falsely claim that the customer has received a refund.
- *
- * REFUND_PENDING means:
- *
- * "PhoneBhai still owes/awaits confirmation of this refund."
- *
- * It can therefore be reconciled/retried safely.
+ * Keep the payment REFUND_PENDING because there is no separate
+ * REFUND_FAILED status in the current payment enum.
  */
 async function handleRefundFailed(refundEntity: any) {
   const providerPaymentId = refundEntity?.payment_id;
-
   const refundId = refundEntity?.id;
 
   if (typeof providerPaymentId !== "string") {
@@ -778,9 +700,7 @@ async function handleRefundFailed(refundEntity: any) {
   await prisma.$transaction(
     async (tx) => {
       const payment = await tx.payment.findFirst({
-        where: {
-          providerPaymentId,
-        },
+        where: { providerPaymentId },
       });
 
       if (!payment) {
@@ -788,14 +708,9 @@ async function handleRefundFailed(refundEntity: any) {
           "Unknown Razorpay failed refund payment:",
           providerPaymentId,
         );
-
         return;
       }
 
-      /*
-       * If it has already been successfully refunded,
-       * never downgrade it.
-       */
       if (
         payment.status === PaymentStatus.REFUNDED ||
         payment.status === PaymentStatus.PARTIALLY_REFUNDED
@@ -803,31 +718,26 @@ async function handleRefundFailed(refundEntity: any) {
         return;
       }
 
-      const existingReason = payment.refundReason ?? "Refund pending";
+      const existingReason =
+        payment.refundReason ?? "Refund pending";
 
       await tx.payment.update({
-        where: {
-          id: payment.id,
-        },
-
+        where: { id: payment.id },
         data: {
           status: PaymentStatus.REFUND_PENDING,
-
-          refundId: typeof refundId === "string" ? refundId : payment.refundId,
-
-          refundReason: `${existingReason} | Razorpay refund failed or requires retry`,
+          refundId:
+            typeof refundId === "string"
+              ? refundId
+              : payment.refundId,
+          refundReason:
+            `${existingReason} | Razorpay refund failed or requires retry`,
         },
       });
 
-      await tx.order.update({
-        where: {
-          id: payment.orderId,
-        },
-
-        data: {
-          paymentStatus: PaymentStatus.REFUND_PENDING,
-        },
-      });
+      await recalculateOrderPaymentStatus(
+        tx,
+        payment.orderId,
+      );
     },
     {
       isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
@@ -836,36 +746,19 @@ async function handleRefundFailed(refundEntity: any) {
 }
 
 /**
- * ============================================================
  * RAZORPAY WEBHOOK
- * ============================================================
+ * POST /api/v1/payments/webhook
  *
- * POST
- * /api/v1/payments/webhook
- *
- * NO JWT AUTHENTICATION.
+ * No JWT authentication. Signature verification is mandatory.
  */
-
 export async function razorpayWebhook(req: Request, res: Response) {
   try {
-    /*
-     * ========================================================
-     * 1. Verify webhook signature
-     * ========================================================
-     */
-
     if (!verifyWebhookSignature(req)) {
       return res.status(401).json({
         success: false,
         message: "Invalid webhook signature",
       });
     }
-
-    /*
-     * ========================================================
-     * 2. Validate event
-     * ========================================================
-     */
 
     const event = req.body?.event;
 
@@ -875,15 +768,6 @@ export async function razorpayWebhook(req: Request, res: Response) {
         message: "Invalid Razorpay webhook event",
       });
     }
-
-    /*
-     * ========================================================
-     * 3. Ignore unrelated Razorpay events
-     * ========================================================
-     *
-     * We intentionally acknowledge events that PhoneBhai
-     * doesn't need to process.
-     */
 
     const supportedEvents = new Set([
       "payment.authorized",
@@ -901,18 +785,7 @@ export async function razorpayWebhook(req: Request, res: Response) {
       });
     }
 
-    /*
-     * ========================================================
-     * 4. REFUND EVENTS
-     * ========================================================
-     *
-     * Refund events contain:
-     *
-     * payload.refund.entity
-     *
-     * rather than payment.entity.
-     */
-
+    // REFUND EVENTS
     if (
       event === "refund.created" ||
       event === "refund.processed" ||
@@ -928,12 +801,6 @@ export async function razorpayWebhook(req: Request, res: Response) {
       }
 
       if (event === "refund.created") {
-        /*
-         * The payment service already marks the DB as
-         * REFUND_PENDING when the refund request is created.
-         *
-         * refund.created is therefore informational/idempotent.
-         */
         return res.status(200).json({
           success: true,
           message: "Refund creation acknowledged",
@@ -957,12 +824,7 @@ export async function razorpayWebhook(req: Request, res: Response) {
       });
     }
 
-    /*
-     * ========================================================
-     * 5. PAYMENT EVENTS
-     * ========================================================
-     */
-
+    // PAYMENT EVENTS
     const paymentEntity = req.body?.payload?.payment?.entity;
 
     if (!paymentEntity) {
@@ -973,7 +835,6 @@ export async function razorpayWebhook(req: Request, res: Response) {
     }
 
     const razorpayOrderId = paymentEntity?.order_id;
-
     const razorpayPaymentId = paymentEntity?.id;
 
     if (typeof razorpayOrderId !== "string") {
@@ -983,26 +844,17 @@ export async function razorpayWebhook(req: Request, res: Response) {
       });
     }
 
-    /*
-     * ========================================================
-     * 6. Find PhoneBhai payment
-     * ========================================================
-     */
-
     const payment = await prisma.payment.findUnique({
       where: {
         providerOrderId: razorpayOrderId,
       },
     });
 
-    /*
-     * Unknown Razorpay order.
-     *
-     * Acknowledge rather than causing endless retries.
-     */
-
     if (!payment) {
-      console.warn("Unknown Razorpay payment order:", razorpayOrderId);
+      console.warn(
+        "Unknown Razorpay payment order:",
+        razorpayOrderId,
+      );
 
       return res.status(200).json({
         success: true,
@@ -1010,16 +862,13 @@ export async function razorpayWebhook(req: Request, res: Response) {
       });
     }
 
-    /*
-     * ========================================================
-     * 7. PAYMENT FAILED
-     * ========================================================
-     *
-     * NEVER touch stock.
-     */
-
+    // PAYMENT FAILED
     if (event === "payment.failed") {
-      await handlePaymentFailed(payment.id, razorpayPaymentId, paymentEntity);
+      await handlePaymentFailed(
+        payment.id,
+        razorpayPaymentId,
+        paymentEntity,
+      );
 
       return res.status(200).json({
         success: true,
@@ -1027,18 +876,12 @@ export async function razorpayWebhook(req: Request, res: Response) {
       });
     }
 
-    /*
-     * ========================================================
-     * 8. PAYMENT AUTHORIZED
-     * ========================================================
-     *
-     * Authorized != captured.
-     *
-     * NO STOCK DEDUCTION.
-     */
-
+    // PAYMENT AUTHORIZED
     if (event === "payment.authorized") {
-      await handlePaymentAuthorized(payment.id, razorpayPaymentId);
+      await handlePaymentAuthorized(
+        payment.id,
+        razorpayPaymentId,
+      );
 
       return res.status(200).json({
         success: true,
@@ -1046,35 +889,7 @@ export async function razorpayWebhook(req: Request, res: Response) {
       });
     }
 
-    /*
-     * ========================================================
-     * 9. PAYMENT CAPTURED
-     * ========================================================
-     *
-     * THIS IS THE ONLY PAYMENT EVENT THAT CAN DEDUCT STOCK.
-     *
-     * processCapturedPayment() handles:
-     *
-     * - stock validation
-     * - atomic stock deduction
-     * - payment status
-     * - order status
-     * - cart cleanup
-     * - refund initiation when stock is unavailable
-     */
-
-    // if (event === "payment.captured") {
-    //   if (typeof razorpayPaymentId !== "string") {
-    //     return res.status(400).json({
-    //       success: false,
-    //       message: "Razorpay payment ID missing",
-    //     });
-    //   }
-
-    //   const result = await processCapturedPayment(
-    //     razorpayOrderId,
-    //     razorpayPaymentId,
-    //   );
+    // PAYMENT CAPTURED
     if (event === "payment.captured") {
       if (typeof razorpayPaymentId !== "string") {
         return res.status(400).json({
@@ -1086,7 +901,9 @@ export async function razorpayWebhook(req: Request, res: Response) {
       const capturedAmount = paymentEntity?.amount;
       const capturedCurrency = paymentEntity?.currency;
 
-      const expectedAmountPaise = Math.round(Number(payment.amount) * 100);
+      const expectedAmountPaise = Math.round(
+        Number(payment.amount) * 100,
+      );
 
       if (
         typeof capturedAmount !== "number" ||
@@ -1094,15 +911,18 @@ export async function razorpayWebhook(req: Request, res: Response) {
         typeof capturedCurrency !== "string" ||
         capturedCurrency !== payment.currency
       ) {
-        console.error("RAZORPAY WEBHOOK AMOUNT/CURRENCY MISMATCH", {
-          paymentId: payment.id,
-          amountMatches:
-            typeof capturedAmount === "number" &&
-            capturedAmount === expectedAmountPaise,
-          currencyMatches:
-            typeof capturedCurrency === "string" &&
-            capturedCurrency === payment.currency,
-        });
+        console.error(
+          "RAZORPAY WEBHOOK AMOUNT/CURRENCY MISMATCH",
+          {
+            paymentId: payment.id,
+            amountMatches:
+              typeof capturedAmount === "number" &&
+              capturedAmount === expectedAmountPaise,
+            currencyMatches:
+              typeof capturedCurrency === "string" &&
+              capturedCurrency === payment.currency,
+          },
+        );
 
         return res.status(400).json({
           success: false,
@@ -1114,12 +934,7 @@ export async function razorpayWebhook(req: Request, res: Response) {
         razorpayOrderId,
         razorpayPaymentId,
       );
-      /*
-       * Payment was captured but stock was unavailable.
-       *
-       * The service has already placed the payment into
-       * REFUND_PENDING and attempted the refund.
-       */
+
       if (result.status === PaymentStatus.REFUND_PENDING) {
         return res.status(200).json({
           success: true,
@@ -1134,11 +949,9 @@ export async function razorpayWebhook(req: Request, res: Response) {
 
       return res.status(200).json({
         success: true,
-
         message: result.alreadyProcessed
           ? "Payment already processed"
           : "Payment capture processed",
-
         data: result,
       });
     }
@@ -1150,13 +963,7 @@ export async function razorpayWebhook(req: Request, res: Response) {
   } catch (error) {
     console.error("RAZORPAY WEBHOOK ERROR:", error);
 
-    /*
-     * 500 intentionally causes Razorpay to retry the webhook.
-     *
-     * This is preferable to acknowledging a webhook that
-     * PhoneBhai failed to process.
-     */
-
+    // A 500 response allows Razorpay to retry the webhook.
     return res.status(500).json({
       success: false,
       message: "Webhook processing failed",

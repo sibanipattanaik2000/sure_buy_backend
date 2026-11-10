@@ -58,6 +58,7 @@ const ORDER_INCLUDE = {
     },
   },
 
+
   payments: {
     orderBy: {
       createdAt: "asc" as const,
@@ -73,9 +74,19 @@ const ORDER_INCLUDE = {
       refundAmount: true,
       refundReason: true,
       refundedAt: true,
+
+      // Add refund ledger records here.
+      refunds: {
+        select: {
+          amount: true,
+          status: true,
+        },
+      },
+
       createdAt: true,
     },
   },
+
 } satisfies Prisma.OrderInclude;
 
 type OrderWithItems = Prisma.OrderGetPayload<{
@@ -98,30 +109,36 @@ function decimalToNumber(value: Prisma.Decimal | number): number {
  * REFUNDED / PENDING / FAILED / REFUND_PENDING:
  *   Do not count as successfully retained payment.
  */
+
 function calculatePaidAmount(order: OrderWithItems): number {
   const paidInPaise = order.payments.reduce((sum, payment) => {
     const amountInPaise = Math.round(Number(payment.amount) * 100);
+    const refundAmountInPaise = Math.round(
+      Number(payment.refundAmount ?? 0) * 100,
+    );
 
-    if (
-      payment.status === PaymentStatus.PAID ||
-      payment.status === PaymentStatus.PARTIALLY_PAID
-    ) {
-      return sum + amountInPaise;
+    switch (payment.status) {
+      case PaymentStatus.PAID:
+      case PaymentStatus.PARTIALLY_PAID:
+      case PaymentStatus.REFUND_PENDING:
+        // A pending refund has not yet been processed.
+        return sum + amountInPaise;
+
+      case PaymentStatus.PARTIALLY_REFUNDED:
+        return sum + Math.max(0, amountInPaise - refundAmountInPaise);
+
+      case PaymentStatus.REFUNDED:
+      case PaymentStatus.PENDING:
+      case PaymentStatus.AUTHORIZED:
+      case PaymentStatus.FAILED:
+      default:
+        return sum;
     }
-
-    if (payment.status === PaymentStatus.PARTIALLY_REFUNDED) {
-      const refundedInPaise = Math.round(
-        Number(payment.refundAmount ?? 0) * 100,
-      );
-
-      return sum + Math.max(0, amountInPaise - refundedInPaise);
-    }
-
-    return sum;
   }, 0);
 
   return Number((paidInPaise / 100).toFixed(2));
 }
+
 
 function serializeOrder(order: OrderWithItems) {
   const totalAmount = decimalToNumber(order.totalAmount);
@@ -818,6 +835,7 @@ export async function cancelOrder(userId: string, orderId: string) {
             refundAmount: payment.amount,
 
             refundReason: `Order ${order.orderNumber} cancelled by customer`,
+            
           },
         });
       } else if (refundAlreadyPending) {

@@ -12,31 +12,48 @@ function calculateCollectedAmount(
     amount: Prisma.Decimal | number;
     status: PaymentStatus;
     refundAmount?: Prisma.Decimal | number | null;
+    refunds?: Array<{
+      amount: Prisma.Decimal | number;
+      status: string;
+    }>;
   }>,
 ) {
   const total = payments.reduce((sum, payment) => {
     const amount = Number(payment.amount);
 
     if (
-      payment.status === PaymentStatus.PAID ||
-      payment.status === PaymentStatus.PARTIALLY_PAID
+      payment.status !== PaymentStatus.PAID &&
+      payment.status !== PaymentStatus.PARTIALLY_PAID &&
+      payment.status !== PaymentStatus.REFUND_PENDING &&
+      payment.status !== PaymentStatus.PARTIALLY_REFUNDED &&
+      payment.status !== PaymentStatus.REFUNDED
     ) {
-      return sum + amount;
+      return sum;
     }
 
-    if (payment.status === PaymentStatus.PARTIALLY_REFUNDED) {
-      return sum + Math.max(
-        0,
-        amount - Number(payment.refundAmount ?? 0),
-      );
+    const processedRefunds = (payment.refunds ?? [])
+      .filter((refund) => refund.status === "PROCESSED")
+      .reduce((value, refund) => value + Number(refund.amount), 0);
+
+    let refunded = processedRefunds;
+
+    if (
+      processedRefunds === 0 &&
+      (payment.status === PaymentStatus.PARTIALLY_REFUNDED ||
+        payment.status === PaymentStatus.REFUNDED)
+    ) {
+      refunded = Number(payment.refundAmount ?? 0);
+
+      if (payment.status === PaymentStatus.REFUNDED && refunded === 0) {
+        refunded = amount;
+      }
     }
 
-    return sum;
+    return sum + Math.max(0, amount - refunded);
   }, 0);
 
   return Number(total.toFixed(2));
 }
-
 function serializeAdminOrder(order: any) {
   const paidAmount = calculateCollectedAmount(order.payments ?? []);
   const totalAmount = Number(order.totalAmount);
@@ -123,10 +140,17 @@ const ADMIN_ORDER_INCLUDE = {
       createdAt: "asc" as const,
     },
   },
-  payments: {
-    orderBy: {
-      createdAt: "asc" as const,
+ payments: {
+  orderBy: {
+    createdAt: "asc" as const,
+  },
+  include: {
+    refunds: {
+      orderBy: {
+        createdAt: "asc" as const,
+      },
     },
+  },
   },
 } satisfies Prisma.OrderInclude;
 

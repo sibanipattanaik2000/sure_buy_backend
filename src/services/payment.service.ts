@@ -25,7 +25,59 @@ function toPaise(amount: number): number {
 function toNumber(value: Prisma.Decimal | number): number {
   return Number(value);
 }
+function calculateNetCollected(
+  payments: Array<{
+    amount: Prisma.Decimal | number;
+    status: PaymentStatus;
+    refundAmount?: Prisma.Decimal | number | null;
+    refunds?: Array<{
+      amount: Prisma.Decimal | number;
+      status: string;
+    }>;
+  }>,
+): number {
+  const collected = payments.reduce((sum, payment) => {
+    const amount = Number(payment.amount);
 
+    if (
+      payment.status !== PaymentStatus.PAID &&
+      payment.status !== PaymentStatus.PARTIALLY_PAID &&
+      payment.status !== PaymentStatus.REFUND_PENDING &&
+      payment.status !== PaymentStatus.PARTIALLY_REFUNDED &&
+      payment.status !== PaymentStatus.REFUNDED
+    ) {
+      return sum;
+    }
+
+    const processedRefunds = (payment.refunds ?? [])
+      .filter((refund) => refund.status === "PROCESSED")
+      .reduce((refundSum, refund) => {
+        return refundSum + Number(refund.amount);
+      }, 0);
+
+    let refunded = processedRefunds;
+
+    // Compatibility with older payment records without refund ledger rows.
+    if (
+      processedRefunds === 0 &&
+      (payment.status === PaymentStatus.PARTIALLY_REFUNDED ||
+        payment.status === PaymentStatus.REFUNDED)
+    ) {
+      refunded = Number(payment.refundAmount ?? 0);
+
+      if (
+        payment.status === PaymentStatus.REFUNDED &&
+        refunded === 0
+      ) {
+        refunded = amount;
+      }
+    }
+
+    return sum + Math.max(0, amount - refunded);
+  }, 0);
+
+  return Number(collected.toFixed(2));
+}
 function safeString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
@@ -116,10 +168,11 @@ async function removePurchasedCartItems(
  *
  * It is called ONLY after Razorpay confirms CAPTURED.
  */
+
 async function deductStockAfterSuccessfulPayment(
   tx: Prisma.TransactionClient,
   orderId: string,
-) {
+): Promise<boolean> {
   const order = await tx.order.findUnique({
     where: {
       id: orderId,
@@ -135,10 +188,12 @@ async function deductStockAfterSuccessfulPayment(
   }
 
   /**
-   * Idempotency.
+   * Idempotency:
+   * Stock was already deducted for this order.
+   * Return false so cart quantities are not removed again.
    */
   if (order.stockReserved) {
-    return;
+    return false;
   }
 
   const items = await tx.orderItem.findMany({
@@ -156,12 +211,7 @@ async function deductStockAfterSuccessfulPayment(
     throw new Error("ORDER_HAS_NO_ITEMS");
   }
 
-  /**
-   * Every purchasable order must have a variant.
-   */
-
-  const deductedItems: typeof items = [];
-
+  // Validate every item before deducting any stock.
   for (const item of items) {
     if (item.variantId === null) {
       throw new Error("VARIANT_REQUIRED");
@@ -192,11 +242,10 @@ async function deductStockAfterSuccessfulPayment(
   }
 
   /**
-   * Atomic stock deductions.
-   *
-   * WHERE stock >= quantity prevents concurrent
-   * purchases from making inventory negative.
+   * Deduct stock atomically.
+   * The stock >= quantity condition prevents negative inventory.
    */
+  const deductedItems: typeof items = [];
 
   for (const item of items) {
     const result = await tx.productVariant.updateMany({
@@ -215,9 +264,7 @@ async function deductStockAfterSuccessfulPayment(
     });
 
     if (result.count !== 1) {
-      // Restore earlier deductions before entering the refund flow.
-      // If restoration fails, throw an unexpected error so the
-      // enclosing transaction aborts instead of committing partial stock.
+      // Restore earlier deductions if a later deduction fails.
       for (const deductedItem of [...deductedItems].reverse()) {
         const restored = await tx.productVariant.updateMany({
           where: {
@@ -250,7 +297,11 @@ async function deductStockAfterSuccessfulPayment(
       stockReserved: true,
     },
   });
+
+  // Stock was deducted successfully for the first time.
+  return true;
 }
+
 
 /**
  * ============================================================
@@ -705,10 +756,28 @@ export async function processCapturedPayment(
 
   const result = await prisma.$transaction(
     async (tx) => {
-      const payment = await tx.payment.findUnique({
-        where: {
-          providerOrderId,
+      const paymentReference = await tx.payment.findUnique({
+        where: { providerOrderId },
+        select: {
+          id: true,
+          orderId: true,
         },
+      });
+
+      if (!paymentReference) {
+        throw new Error("PAYMENT_NOT_FOUND");
+      }
+
+      // Serialize all captures for this order.
+      await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT "id"
+        FROM "Order"
+        WHERE "id" = ${paymentReference.orderId}
+        FOR UPDATE
+      `;
+
+      const payment = await tx.payment.findUnique({
+        where: { id: paymentReference.id },
         include: {
           order: {
             select: {
@@ -730,27 +799,26 @@ export async function processCapturedPayment(
         throw new Error("PAYMENT_NOT_FOUND");
       }
 
-      /**
-       * Exact payment idempotency.
-       */
+      // Verify the payment ID before accepting an idempotent retry.
       if (
-        payment.status === PaymentStatus.PAID ||
-        payment.status === PaymentStatus.PARTIALLY_PAID
+        payment.providerPaymentId &&
+        payment.providerPaymentId !== providerPaymentId
       ) {
+        throw new Error("PAYMENT_ID_MISMATCH");
+      }
+
+      if (payment.status === PaymentStatus.PAID) {
         return {
           success: true,
           alreadyProcessed: true,
           orderId: payment.orderId,
           orderNumber: payment.order.orderNumber,
           paymentId: payment.id,
-          razorpayPaymentId: payment.providerPaymentId ?? providerPaymentId,
-          status: payment.status,
+          razorpayPaymentId: payment.providerPaymentId,
+          status: payment.order.paymentStatus,
         };
       }
 
-      /**
-       * Refund already in progress/completed.
-       */
       if (
         payment.status === PaymentStatus.REFUND_PENDING ||
         payment.status === PaymentStatus.REFUNDED ||
@@ -762,27 +830,11 @@ export async function processCapturedPayment(
           orderId: payment.orderId,
           orderNumber: payment.order.orderNumber,
           paymentId: payment.id,
-          razorpayPaymentId: payment.providerPaymentId ?? providerPaymentId,
+          razorpayPaymentId: payment.providerPaymentId,
           status: payment.status,
         };
       }
 
-      /**
-       * Payment ID mismatch protection.
-       */
-      if (
-        payment.providerPaymentId &&
-        payment.providerPaymentId !== providerPaymentId
-      ) {
-        throw new Error("PAYMENT_ID_MISMATCH");
-      }
-
-      /**
-       * Cancelled order.
-       *
-       * If money was captured after cancellation,
-       * refund it.
-       */
       if (payment.order.status === OrderStatus.CANCELLED) {
         const reason = "Payment captured after order cancellation";
 
@@ -794,9 +846,7 @@ export async function processCapturedPayment(
         };
 
         await tx.payment.update({
-          where: {
-            id: payment.id,
-          },
+          where: { id: payment.id },
           data: {
             providerPaymentId,
             status: PaymentStatus.REFUND_PENDING,
@@ -816,18 +866,11 @@ export async function processCapturedPayment(
         };
       }
 
-      /**
-       * ======================================================
-       * STOCK
-       * ======================================================
-       *
-       * Razorpay has already captured the customer's money.
-       *
-       * Therefore any known fulfillment/inventory failure
-       * must result in REFUND_PENDING.
-       */
+      let stockWasDeducted = false;
+
       try {
-        await deductStockAfterSuccessfulPayment(tx, payment.orderId);
+        stockWasDeducted =
+          await deductStockAfterSuccessfulPayment(tx, payment.orderId);
       } catch (error) {
         const refundableStockErrors = new Set([
           "INSUFFICIENT_STOCK_AFTER_PAYMENT",
@@ -841,7 +884,8 @@ export async function processCapturedPayment(
           error instanceof Error &&
           refundableStockErrors.has(error.message)
         ) {
-          const reason = `Payment captured but order could not be fulfilled: ${error.message}`;
+          const reason =
+            `Payment captured but order could not be fulfilled: ${error.message}`;
 
           refundRequired = {
             paymentId: payment.id,
@@ -851,9 +895,7 @@ export async function processCapturedPayment(
           };
 
           await tx.payment.update({
-            where: {
-              id: payment.id,
-            },
+            where: { id: payment.id },
             data: {
               providerPaymentId,
               status: PaymentStatus.REFUND_PENDING,
@@ -873,57 +915,60 @@ export async function processCapturedPayment(
           };
         }
 
-        /**
-         * Unexpected DB/application failure.
-         *
-         * Transaction rolls back.
-         *
-         * IMPORTANT:
-         * This is intentionally not converted into a refund
-         * because the database transaction itself failed and
-         * we cannot safely know what state was committed.
-         */
         throw error;
       }
 
-      /**
-       * ======================================================
-       * PAYMENT STATUS
-       * ======================================================
-       *
-       * COD:
-       * ₹500 captured → PARTIALLY_PAID
-       *
-       * UPI/Card/EMI:
-       * Full amount captured → PAID
-       */
-      const isCod = payment.order.paymentMethod === PaymentMethod.COD;
-
-      const newPaymentStatus = isCod
-        ? PaymentStatus.PARTIALLY_PAID
-        : PaymentStatus.PAID;
-
+      // An individual captured Razorpay transaction is PAID.
+      // PARTIALLY_PAID belongs to the overall order, not this transaction.
       const updatedPayment = await tx.payment.update({
-        where: {
-          id: payment.id,
-        },
+        where: { id: payment.id },
         data: {
           providerPaymentId,
-          status: newPaymentStatus,
+          status: PaymentStatus.PAID,
         },
       });
+
+      const allPayments = await tx.payment.findMany({
+        where: { orderId: payment.orderId },
+        include: {
+          refunds: {
+            select: {
+              amount: true,
+              status: true,
+            },
+          },
+        },
+      });
+
+      const paidAmount = calculateNetCollected(allPayments);
+      const totalAmount = toNumber(payment.order.totalAmount);
+
+      const nextPaymentStatus =
+        paidAmount >= totalAmount
+          ? PaymentStatus.PAID
+          : paidAmount > 0
+            ? PaymentStatus.PARTIALLY_PAID
+            : PaymentStatus.PENDING;
 
       await tx.order.update({
-        where: {
-          id: payment.orderId,
-        },
+        where: { id: payment.orderId },
         data: {
-          paymentStatus: newPaymentStatus,
-          status: OrderStatus.CONFIRMED,
+          paymentStatus: nextPaymentStatus,
+          // Never downgrade an order already being fulfilled.
+          ...(payment.order.status === OrderStatus.PENDING
+            ? { status: OrderStatus.CONFIRMED }
+            : {}),
         },
       });
 
-      await removePurchasedCartItems(tx, payment.order.userId, payment.orderId);
+      // Only remove cart quantities when this capture first deducted stock.
+      if (stockWasDeducted) {
+        await removePurchasedCartItems(
+          tx,
+          payment.order.userId,
+          payment.orderId,
+        );
+      }
 
       return {
         success: true,
@@ -932,7 +977,11 @@ export async function processCapturedPayment(
         orderNumber: payment.order.orderNumber,
         paymentId: updatedPayment.id,
         razorpayPaymentId: providerPaymentId,
-        status: newPaymentStatus,
+        status: nextPaymentStatus,
+        paidAmount,
+        remainingAmount: Number(
+          Math.max(0, totalAmount - paidAmount).toFixed(2),
+        ),
       };
     },
     {
@@ -941,11 +990,6 @@ export async function processCapturedPayment(
     },
   );
 
-  /**
-   * ==========================================================
-   * EXECUTE REFUND AFTER TRANSACTION COMMIT
-   * ==========================================================
-   */
   if (refundRequired) {
     try {
       const refund = await initiateRazorpayRefund(
@@ -965,11 +1009,6 @@ export async function processCapturedPayment(
     } catch (error) {
       console.error("REFUND REQUEST FAILED:", error);
 
-      /**
-       * Payment remains REFUND_PENDING.
-       *
-       * Never tell the customer that the money was refunded.
-       */
       return {
         ...result,
         refundRequested: false,
@@ -988,7 +1027,10 @@ export async function processCapturedPayment(
  *
  * NEVER changes inventory.
  */
-export async function createRazorpayOrder(userId: string, orderId: string) {
+export async function createRazorpayOrder(
+  userId: string,
+  orderId: string,
+) {
   const order = await prisma.order.findFirst({
     where: {
       id: orderId,
@@ -1009,20 +1051,59 @@ export async function createRazorpayOrder(userId: string, orderId: string) {
     throw new Error("ORDER_NOT_FOUND");
   }
 
-  if (
-    order.paymentStatus === PaymentStatus.PAID ||
-    order.paymentStatus === PaymentStatus.PARTIALLY_PAID
-  ) {
-    throw new Error("ORDER_ALREADY_PAID");
-  }
-
   if (order.status === OrderStatus.CANCELLED) {
     throw new Error("ORDER_CANCELLED");
   }
 
-  /**
-   * Reuse pending/authorized payment only.
-   */
+  if (order.paymentStatus === PaymentStatus.PAID) {
+    throw new Error("ORDER_ALREADY_PAID");
+  }
+
+  const payments = await prisma.payment.findMany({
+    where: { orderId: order.id },
+    include: {
+      refunds: {
+        select: {
+          amount: true,
+          status: true,
+        },
+      },
+    },
+  });
+
+  if (
+    payments.some(
+      (payment) => payment.status === PaymentStatus.REFUND_PENDING,
+    )
+  ) {
+    throw new Error("ORDER_REFUND_PENDING");
+  }
+
+  const paidAmount = calculateNetCollected(payments);
+  const totalAmount = toNumber(order.totalAmount);
+
+  const remainingAmount = Number(
+    Math.max(0, totalAmount - paidAmount).toFixed(2),
+  );
+
+  if (remainingAmount <= 0) {
+    throw new Error("ORDER_ALREADY_PAID");
+  }
+
+  // First COD payment: up to ₹500.
+  // Every subsequent payment: the complete remaining balance.
+  const isFirstCodPayment =
+    order.paymentMethod === PaymentMethod.COD && paidAmount <= 0;
+
+  const amount = isFirstCodPayment
+    ? Math.min(COD_ADVANCE_AMOUNT, remainingAmount)
+    : remainingAmount;
+
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error("INVALID_PAYMENT_AMOUNT");
+  }
+
+  // Reuse a pending Razorpay order only when its amount still matches.
   const existingPayment = await prisma.payment.findFirst({
     where: {
       orderId: order.id,
@@ -1030,44 +1111,43 @@ export async function createRazorpayOrder(userId: string, orderId: string) {
       status: {
         in: [PaymentStatus.PENDING, PaymentStatus.AUTHORIZED],
       },
-      providerOrderId: {
-        not: null,
-      },
+      providerOrderId: { not: null },
     },
-    orderBy: {
-      createdAt: "desc",
-    },
-    select: {
-      providerOrderId: true,
-      amount: true,
-      currency: true,
-    },
+    orderBy: { createdAt: "desc" },
   });
 
-  if (existingPayment?.providerOrderId) {
+  if (
+    existingPayment?.providerOrderId &&
+    Number(existingPayment.amount) === amount &&
+    existingPayment.currency === order.currency
+  ) {
     return {
       orderId: order.id,
       orderNumber: order.orderNumber,
       razorpayOrderId: existingPayment.providerOrderId,
-      amount: toNumber(existingPayment.amount),
-      amountInPaise: toPaise(toNumber(existingPayment.amount)),
+      amount,
+      amountInPaise: toPaise(amount),
       currency: existingPayment.currency,
       keyId: env.RAZORPAY_KEY_ID,
+      paymentPurpose: isFirstCodPayment
+        ? "COD_ADVANCE"
+        : "BALANCE_PAYMENT",
+      paidAmount,
+      remainingAmount,
     };
   }
 
-  /**
-   * COD = ₹500 advance.
-   *
-   * UPI/Card/EMI = complete amount.
-   */
-  const amount =
-    order.paymentMethod === PaymentMethod.COD
-      ? COD_ADVANCE_AMOUNT
-      : toNumber(order.totalAmount);
-
-  if (!Number.isFinite(amount) || amount <= 0) {
-    throw new Error("INVALID_PAYMENT_AMOUNT");
+  // A stale pending attempt must not be reused at the old amount.
+  if (existingPayment) {
+    await prisma.payment.update({
+      where: { id: existingPayment.id },
+      data: {
+        status: PaymentStatus.FAILED,
+        failureCode: "BALANCE_CHANGED",
+        failureMessage:
+          "Outstanding balance changed; create a new payment attempt.",
+      },
+    });
   }
 
   let razorpayOrder;
@@ -1082,11 +1162,13 @@ export async function createRazorpayOrder(userId: string, orderId: string) {
         orderNumber: order.orderNumber,
         userId,
         paymentMethod: order.paymentMethod,
+        paymentPurpose: isFirstCodPayment
+          ? "COD_ADVANCE"
+          : "BALANCE_PAYMENT",
       },
     });
   } catch (error) {
     console.error("RAZORPAY ORDER CREATION ERROR:", error);
-
     throw error;
   }
 
@@ -1110,6 +1192,11 @@ export async function createRazorpayOrder(userId: string, orderId: string) {
     amountInPaise: razorpayOrder.amount,
     currency: razorpayOrder.currency,
     keyId: env.RAZORPAY_KEY_ID,
+    paymentPurpose: isFirstCodPayment
+      ? "COD_ADVANCE"
+      : "BALANCE_PAYMENT",
+    paidAmount,
+    remainingAmount,
   };
 }
 
