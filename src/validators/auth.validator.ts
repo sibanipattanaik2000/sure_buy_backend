@@ -1,34 +1,23 @@
 import { z } from "zod";
 
 export const registerSchema = z.object({
-  firstName: z
+  fullName: z
     .string()
     .trim()
-    .min(2, "First name must be at least 2 characters")
-    .max(50, "First name is too long"),
-
-  lastName: z
-    .string()
-    .trim()
-    .min(2, "Last name must be at least 2 characters")
-    .max(50, "Last name is too long"),
-
-  email: z
-    .string()
-    .trim()
-    .email("Please enter a valid email address")
-    .max(255, "Email is too long")
-    .transform((value) => value.toLowerCase()),
-
-  password: z
-    .string()
-    .min(8, "Password must be at least 8 characters")
-    .max(72, "Password is too long"),
+    .min(2, "Please enter your full name")
+    .max(100, "Name is too long"),
 
   phone: z
     .string()
     .trim()
-    .regex(/^[6-9]\d{9}$/, "Please enter a valid Indian phone number")
+    .regex(/^[6-9]\d{9}$/, "Enter a valid 10-digit Indian mobile number"),
+});
+
+export const verifyRegistrationSchema = registerSchema.extend({
+  code: z
+    .string()
+    .trim()
+    .regex(/^\d{6}$/, "OTP must be 6 digits"),
 });
 export const loginSchema = z.object({
   email: z
@@ -68,16 +57,11 @@ export const updateProfileSchema = z.object({
   phone: z
     .string()
     .trim()
-    .regex(
-      /^[6-9]\d{9}$/,
-      "Please enter a valid Indian phone number",
-    )
+    .regex(/^[6-9]\d{9}$/, "Please enter a valid Indian phone number")
     .optional(),
 });
 export const changePasswordSchema = z.object({
-  currentPassword: z
-    .string()
-    .min(1, "Current password is required"),
+  currentPassword: z.string().min(1, "Current password is required"),
 
   newPassword: z
     .string()
@@ -88,35 +72,26 @@ export const verifyPhoneSchema = z.object({
   phone: z
     .string()
     .trim()
-    .regex(
-      /^[6-9]\d{9}$/,
-      "Please enter a valid Indian phone number",
-    ),
+    .regex(/^[6-9]\d{9}$/, "Enter a valid 10-digit Indian mobile number"),
 
   code: z
     .string()
     .trim()
-    .regex(/^\d{6}$/, "OTP must be a 6-digit code"),
+    .regex(/^\d{6}$/, "OTP must be 6 digits"),
 });
 
 export const forgotPasswordSchema = z.object({
   phone: z
     .string()
     .trim()
-    .regex(
-      /^[6-9]\d{9}$/,
-      "Please enter a valid Indian phone number",
-    ),
+    .regex(/^[6-9]\d{9}$/, "Please enter a valid Indian phone number"),
 });
 
 export const resetPasswordSchema = z.object({
   phone: z
     .string()
     .trim()
-    .regex(
-      /^[6-9]\d{9}$/,
-      "Please enter a valid Indian phone number",
-    ),
+    .regex(/^[6-9]\d{9}$/, "Please enter a valid Indian phone number"),
 
   code: z
     .string()
@@ -132,11 +107,8 @@ export const resetPasswordSchema = z.object({
 export type VerifyPhoneInput = z.infer<typeof verifyPhoneSchema>;
 export type ForgotPasswordInput = z.infer<typeof forgotPasswordSchema>;
 export type ResetPasswordInput = z.infer<typeof resetPasswordSchema>;
-export type ChangePasswordInput = z.infer<
-  typeof changePasswordSchema
->;
-export type UpdateProfileInput = z.infer<
-  typeof updateProfileSchema
->;
+export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
+export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;
 export type RegisterInput = z.infer<typeof registerSchema>;
 export type LoginInput = z.infer<typeof loginSchema>;
+export type VerifyRegistrationInput = z.infer<typeof verifyRegistrationSchema>;

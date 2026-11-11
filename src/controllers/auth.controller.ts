@@ -3,7 +3,9 @@ import { prisma } from "../config/prisma";
 import { generateToken } from "../utils/jwt";
 import {
   registerUser,
+  completePhoneRegistration,
   loginUser,
+  requestLoginPhoneOtp,
   getCurrentUser,
   updateProfile,
   changePassword,
@@ -11,15 +13,12 @@ import {
   requestPasswordReset,
   resetPasswordWithOtp,
 } from "../services/auth.service";
-import {
-  sendPhoneVerification,
-  PhoneVerificationError,
-} from "../services/phone-verification.service";
-
+import { PhoneVerificationError } from "../services/phone-verification.service";
 import type { AuthRequest } from "../middleware/auth.middleware";
 
 import {
   registerSchema,
+  verifyRegistrationSchema,
   loginSchema,
   updateProfileSchema,
   changePasswordSchema,
@@ -37,22 +36,22 @@ const isProduction = process.env.NODE_ENV === "production";
 const authCookieOptions = {
   httpOnly: true,
   secure: process.env.NODE_ENV === "production",
-  sameSite: process.env.NODE_ENV === "production"
-    ? ("none" as const)
-    : ("lax" as const),
+  sameSite:
+    process.env.NODE_ENV === "production"
+      ? ("none" as const)
+      : ("lax" as const),
   maxAge: 7 * 24 * 60 * 60 * 1000,
   path: "/",
 };
 export async function register(req: Request, res: Response) {
   try {
     const input = registerSchema.parse(req.body);
+    const result = await registerUser(input);
 
-    const user = await registerUser(input);
-
-    return res.status(201).json({
+    return res.status(200).json({
       success: true,
-      message: "Account created successfully",
-      data: user,
+      message: "OTP sent successfully",
+      data: result,
     });
   } catch (error) {
     if (error instanceof ZodError) {
@@ -63,24 +62,30 @@ export async function register(req: Request, res: Response) {
       });
     }
 
-    if (error instanceof Error && error.message === "EMAIL_ALREADY_EXISTS") {
-      return res.status(409).json({
-        success: false,
-        message: "Email already registered",
-      });
-    }
-
     if (error instanceof Error && error.message === "PHONE_ALREADY_EXISTS") {
       return res.status(409).json({
         success: false,
-        message: "Phone number already registered",
+        message: "This mobile number is already registered. Please log in.",
+      });
+    }
+    if (error instanceof Error && error.message === "OTP_SEND_LIMIT") {
+      return res.status(429).json({
+        success: false,
+        message:
+          "You have reached the daily OTP limit. Please try again tomorrow.",
       });
     }
 
-    if (error instanceof Error && error.message === "OTP_SEND_FAILED") {
-      return res.status(503).json({
+    if (error instanceof Error && error.message === "OTP_ACTIVE") {
+      return res.status(429).json({
         success: false,
-        message: "Unable to send verification code. Please try again.",
+        message: "An OTP is already active. Please wait until it expires.",
+      });
+    }
+    if (error instanceof PhoneVerificationError) {
+      return res.status(error.status).json({
+        success: false,
+        message: error.message,
       });
     }
 
@@ -88,11 +93,76 @@ export async function register(req: Request, res: Response) {
 
     return res.status(500).json({
       success: false,
-      message: "Something went wrong",
+      message: "Unable to start registration. Please try again.",
     });
   }
 }
+export async function verifyRegistration(req: Request, res: Response) {
+  try {
+    const input = verifyRegistrationSchema.parse(req.body);
 
+    const user = await completePhoneRegistration(input);
+    const token = generateToken(user.id);
+
+    res.cookie(AUTH_COOKIE_NAME, token, authCookieOptions);
+
+    return res.status(201).json({
+      success: true,
+      message: "Account created successfully",
+      data: { user },
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === "OTP_EXPIRED") {
+      return res.status(400).json({
+        success: false,
+        message: "OTP has expired. Please request a new code.",
+      });
+    }
+
+    if (error instanceof Error && error.message === "OTP_VERIFY_LIMIT") {
+      return res.status(429).json({
+        success: false,
+        message:
+          "You have reached the daily incorrect OTP limit. Please try again tomorrow.",
+      });
+    }
+    if (error instanceof ZodError) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid verification data",
+        errors: error.flatten().fieldErrors,
+      });
+    }
+
+    if (error instanceof Error && error.message === "INVALID_OTP") {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid or expired OTP",
+      });
+    }
+
+    if (error instanceof Error && error.message === "PHONE_ALREADY_EXISTS") {
+      return res.status(409).json({
+        success: false,
+        message: "This mobile number is already registered. Please log in.",
+      });
+    }
+
+    if (error instanceof PhoneVerificationError) {
+      return res.status(error.status).json({
+        success: false,
+        message: error.message,
+      });
+    }
+
+    console.error("REGISTRATION VERIFICATION ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to create your account. Please try again.",
+    });
+  }
+}
 export async function login(req: Request, res: Response) {
   try {
     const input = loginSchema.parse(req.body);
@@ -136,12 +206,12 @@ export async function login(req: Request, res: Response) {
 }
 
 export async function logout(_req: Request, res: Response) {
-res.clearCookie(AUTH_COOKIE_NAME, {
-  httpOnly: true,
-  secure: isProduction,
-  sameSite: isProduction ? ("none" as const) : ("lax" as const),
-  path: "/",
-});
+  res.clearCookie(AUTH_COOKIE_NAME, {
+    httpOnly: true,
+    secure: isProduction,
+    sameSite: isProduction ? ("none" as const) : ("lax" as const),
+    path: "/",
+  });
 
   return res.status(200).json({
     success: true,
@@ -276,21 +346,15 @@ export async function changeUserPassword(req: AuthRequest, res: Response) {
     });
   }
 }
+
 export async function resendPhoneOtp(req: Request, res: Response) {
   try {
     const input = verifyPhoneSchema.omit({ code: true }).parse(req.body);
 
-    const user = await prisma.user.findUnique({
-      where: {
-        phone: input.phone,
-      },
-      select: {
-        id: true,
-        phone: true,
-      },
-    });
+    const result = await requestLoginPhoneOtp(input.phone);
 
-    if (!user) {
+    // Keep the response generic to avoid exposing account existence.
+    if (!result) {
       return res.status(200).json({
         success: true,
         message:
@@ -298,14 +362,42 @@ export async function resendPhoneOtp(req: Request, res: Response) {
       });
     }
 
-    await sendPhoneVerification(user.phone!);
-
     return res.status(200).json({
       success: true,
       message: "Verification code sent successfully",
+      data: result,
     });
   } catch (error) {
-    // handle PhoneVerificationError here
+    if (error instanceof ZodError) {
+      return res.status(400).json({
+        success: false,
+        message: "Enter a valid mobile number",
+        errors: error.flatten().fieldErrors,
+      });
+    }
+
+    if (error instanceof Error && error.message === "OTP_SEND_LIMIT") {
+      return res.status(429).json({
+        success: false,
+        message:
+          "You have reached the daily OTP limit. Please try again tomorrow.",
+      });
+    }
+
+    if (error instanceof Error && error.message === "OTP_ACTIVE") {
+      return res.status(429).json({
+        success: false,
+        message: "An OTP is already active. Please wait until it expires.",
+      });
+    }
+
+    if (error instanceof PhoneVerificationError) {
+      return res.status(error.status).json({
+        success: false,
+        message: error.message,
+      });
+    }
+
     console.error("SEND OTP ERROR:", error);
 
     return res.status(500).json({
@@ -314,12 +406,12 @@ export async function resendPhoneOtp(req: Request, res: Response) {
     });
   }
 }
+
 export async function verifyPhone(req: Request, res: Response) {
   try {
     const input = verifyPhoneSchema.parse(req.body);
 
     const user = await verifyUserPhone(input);
-
     const token = generateToken(user.id);
 
     res.cookie(AUTH_COOKIE_NAME, token, authCookieOptions);
@@ -332,7 +424,13 @@ export async function verifyPhone(req: Request, res: Response) {
       },
     });
   } catch (error) {
-    console.error("VERIFY PHONE ERROR:", error);
+    if (error instanceof ZodError) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid verification data",
+        errors: error.flatten().fieldErrors,
+      });
+    }
 
     if (error instanceof Error && error.message === "USER_NOT_FOUND") {
       return res.status(404).json({
@@ -341,12 +439,35 @@ export async function verifyPhone(req: Request, res: Response) {
       });
     }
 
-    if (error instanceof Error && error.message === "INVALID_OTP") {
+    if (
+      error instanceof Error &&
+      (error.message === "INVALID_OTP" || error.message === "OTP_EXPIRED")
+    ) {
       return res.status(400).json({
         success: false,
-        message: "Invalid or expired OTP",
+        message:
+          error.message === "OTP_EXPIRED"
+            ? "OTP has expired. Please request a new code."
+            : "Incorrect OTP. Please check the code and try again.",
       });
     }
+
+    if (error instanceof Error && error.message === "OTP_VERIFY_LIMIT") {
+      return res.status(429).json({
+        success: false,
+        message:
+          "You have reached the daily incorrect OTP limit. Please try again tomorrow.",
+      });
+    }
+
+    if (error instanceof PhoneVerificationError) {
+      return res.status(error.status).json({
+        success: false,
+        message: error.message,
+      });
+    }
+
+    console.error("VERIFY PHONE ERROR:", error);
 
     return res.status(500).json({
       success: false,

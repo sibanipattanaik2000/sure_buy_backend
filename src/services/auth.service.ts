@@ -1,6 +1,6 @@
 import { prisma } from "../config/prisma";
 import { hashPassword, comparePassword } from "../utils/password";
-
+import { randomBytes } from "crypto";
 import type {
   RegisterInput,
   LoginInput,
@@ -8,120 +8,79 @@ import type {
   ChangePasswordInput,
   VerifyPhoneInput,
   ResetPasswordInput,
+  VerifyRegistrationInput,
 } from "../validators/auth.validator";
 import {
   sendPhoneVerification,
   verifyPhoneCode,
 } from "./phone-verification.service";
+import {
+  sendProtectedPhoneOtp,
+  verifyProtectedPhoneOtp,
+} from "./phone-otp-security.service";
 
 export async function registerUser(input: RegisterInput) {
-  const existingEmailUser = await prisma.user.findUnique({
-    where: {
-      email: input.email,
-    },
-    include: {
-      phoneVerification: true,
-    },
-  });
-
-  const existingPhoneUser = await prisma.user.findUnique({
-    where: {
-      phone: input.phone,
-    },
-    include: {
-      phoneVerification: true,
-    },
-  });
-
-  /*
-   * ---------------------------------------------------------
-   * EXISTING EMAIL
-   * ---------------------------------------------------------
-   */
-
-  if (existingEmailUser) {
-    const isEmailVerified =
-      existingEmailUser.phoneVerification?.verifiedAt !== null &&
-      existingEmailUser.phoneVerification?.verifiedAt !== undefined;
-
-    /*
-     * A verified account is a real existing account.
-     */
-    if (isEmailVerified) {
-      throw new Error("EMAIL_ALREADY_EXISTS");
-    }
-
-    /*
-     * The email exists but the account is still unverified.
-     *
-     * Only allow the registration flow to continue when the
-     * phone number is also the same account's phone number.
-     */
-    if (existingEmailUser.phone === input.phone) {
-      await sendPhoneVerification(input.phone);
-
-      return {
-        id: existingEmailUser.id,
-        firstName: existingEmailUser.firstName,
-        lastName: existingEmailUser.lastName,
-        email: existingEmailUser.email,
-        phone: existingEmailUser.phone,
-        createdAt: existingEmailUser.createdAt,
-      };
-    }
-
-    /*
-     * Same email but different phone:
-     * do not overwrite or modify the existing account.
-     */
-    throw new Error("EMAIL_ALREADY_EXISTS");
+  if (!input.phone) {
+    throw new Error("PHONE_NOT_FOUND");
   }
 
-  /*
-   * ---------------------------------------------------------
-   * EXISTING PHONE
-   * ---------------------------------------------------------
-   */
+  const existingUser = await prisma.user.findUnique({
+    where: { phone: input.phone },
+    select: { id: true },
+  });
 
-  if (existingPhoneUser) {
-    const isPhoneVerified =
-      existingPhoneUser.phoneVerification?.verifiedAt !== null &&
-      existingPhoneUser.phoneVerification?.verifiedAt !== undefined;
-
-    /*
-     * A verified phone belongs to an existing account.
-     */
-    if (isPhoneVerified) {
-      throw new Error("PHONE_ALREADY_EXISTS");
-    }
-
-    /*
-     * Unverified phone with a different email.
-     *
-     * Do not merge two registration attempts because that could
-     * associate the wrong email/password with an existing account.
-     */
+  if (existingUser) {
     throw new Error("PHONE_ALREADY_EXISTS");
   }
 
-  /*
-   * ---------------------------------------------------------
-   * BRAND NEW ACCOUNT
-   * ---------------------------------------------------------
-   */
+  const otp = await sendProtectedPhoneOtp(input.phone);
 
-  const passwordHash = await hashPassword(input.password);
+  return {
+    ...otp,
+    message: "Verification code sent successfully",
+  };
+}
+export async function completePhoneRegistration(
+  input: VerifyRegistrationInput,
+) {
+  const result = await verifyPhoneCode(input.phone, input.code);
+
+  if (result?.status !== "approved") {
+    throw new Error("INVALID_OTP");
+  }
+
+  // Recheck after OTP verification to protect against duplicate
+  // or simultaneous registration attempts.
+  const existingUser = await prisma.user.findUnique({
+    where: { phone: input.phone },
+    select: { id: true },
+  });
+
+  if (existingUser) {
+    throw new Error("PHONE_ALREADY_EXISTS");
+  }
+
+  const nameParts = input.fullName.trim().split(/\s+/);
+  const firstName = nameParts[0];
+  const lastName = nameParts.slice(1).join(" ") || "Customer";
+
+  // The current Prisma User model requires email and passwordHash.
+  // Customers do not need to enter or use either field.
+  const email = `phone-${input.phone}@accounts.phonebhai.invalid`;
+  const passwordHash = await hashPassword(randomBytes(32).toString("hex"));
 
   try {
-    const user = await prisma.user.create({
+    return await prisma.user.create({
       data: {
-        firstName: input.firstName,
-        lastName: input.lastName,
-        email: input.email,
+        firstName,
+        lastName,
+        email,
         passwordHash,
         phone: input.phone,
         phoneVerification: {
-          create: {},
+          create: {
+            verifiedAt: new Date(),
+          },
         },
       },
       select: {
@@ -131,56 +90,17 @@ export async function registerUser(input: RegisterInput) {
         email: true,
         phone: true,
         createdAt: true,
+        role: true,
       },
     });
-
-    /*
-     * Send OTP only after the user has been successfully created.
-     */
-    try {
-      await sendPhoneVerification(user.phone!);
-    } catch (error) {
-      console.error("REGISTRATION OTP SEND ERROR:", error);
-
-      /*
-       * Do not leave an unusable account in the database if the
-       * initial OTP could not be sent.
-       */
-      await prisma.user.delete({
-        where: {
-          id: user.id,
-        },
-      });
-
-      throw new Error("OTP_SEND_FAILED");
-    }
-
-    return user;
   } catch (error) {
-    /*
-     * Handle concurrent registration requests safely.
-     */
     if (
       error &&
       typeof error === "object" &&
       "code" in error &&
       error.code === "P2002"
     ) {
-      const target =
-        "meta" in error &&
-        error.meta &&
-        typeof error.meta === "object" &&
-        "target" in error.meta
-          ? error.meta.target
-          : undefined;
-
-      if (Array.isArray(target) && target.includes("email")) {
-        throw new Error("EMAIL_ALREADY_EXISTS");
-      }
-
-      if (Array.isArray(target) && target.includes("phone")) {
-        throw new Error("PHONE_ALREADY_EXISTS");
-      }
+      throw new Error("PHONE_ALREADY_EXISTS");
     }
 
     throw error;
@@ -205,7 +125,7 @@ export async function loginUser(input: LoginInput) {
   });
 
   // Do not reveal whether the email exists.
-  if (!user) {
+  if (!user || !user.passwordHash) {
     throw new Error("INVALID_CREDENTIALS");
   }
 
@@ -228,7 +148,22 @@ export async function loginUser(input: LoginInput) {
     role: user.role,
   };
 }
+export async function requestLoginPhoneOtp(phone: string) {
+  const user = await prisma.user.findUnique({
+    where: { phone },
+    select: {
+      id: true,
+      phone: true,
+    },
+  });
 
+  // Avoid revealing whether an account exists.
+  if (!user?.phone) {
+    return null;
+  }
+
+  return sendProtectedPhoneOtp(user.phone);
+}
 export async function getCurrentUser(userId: string) {
   const user = await prisma.user.findUnique({
     where: {
@@ -296,6 +231,7 @@ export async function updateProfile(userId: string, input: UpdateProfileInput) {
 
   return updatedUser;
 }
+
 export async function changePassword(
   userId: string,
   input: ChangePasswordInput,
@@ -308,6 +244,10 @@ export async function changePassword(
 
   if (!user) {
     throw new Error("USER_NOT_FOUND");
+  }
+
+  if (!user.passwordHash) {
+    throw new Error("INVALID_CURRENT_PASSWORD");
   }
 
   const passwordMatch = await comparePassword(
@@ -345,11 +285,17 @@ export async function verifyUserPhone(input: VerifyPhoneInput) {
     throw new Error("USER_NOT_FOUND");
   }
 
-  const result = await verifyPhoneCode(input.phone, input.code);
+  const verifiedPhone = user.phone;
 
-  if (result?.status !== "approved") {
-    throw new Error("INVALID_OTP");
+  if (typeof verifiedPhone !== "string" || !verifiedPhone.trim()) {
+    throw new Error("PHONE_NOT_FOUND");
   }
+  await verifyProtectedPhoneOtp(input.phone, input.code);
+  // const result = await verifyPhoneCode(input.phone, input.code);
+
+  // if (result?.status !== "approved") {
+  //   throw new Error("INVALID_OTP");
+  // }
 
   await prisma.userPhoneVerification.upsert({
     where: {
@@ -369,8 +315,9 @@ export async function verifyUserPhone(input: VerifyPhoneInput) {
     firstName: user.firstName,
     lastName: user.lastName,
     email: user.email,
-    phone: user.phone,
+    phone: verifiedPhone,
     createdAt: user.createdAt,
+    role: user.role,
   };
 }
 
@@ -386,16 +333,23 @@ export async function requestPasswordReset(phone: string) {
   });
 
   // Do not reveal whether an account exists.
-  if (!user) {
+  if (!user || !user.phone) {
     return;
   }
 
-  await sendPhoneVerification(user.phone!);
+  await sendPhoneVerification(user.phone);
 }
+
 export async function resetPasswordWithOtp(input: ResetPasswordInput) {
+  const resetPhone = input.phone;
+
+  if (typeof resetPhone !== "string" || !resetPhone.trim()) {
+    throw new Error("PHONE_NOT_FOUND");
+  }
+
   const user = await prisma.user.findUnique({
     where: {
-      phone: input.phone,
+      phone: resetPhone,
     },
   });
 
@@ -403,7 +357,7 @@ export async function resetPasswordWithOtp(input: ResetPasswordInput) {
     throw new Error("INVALID_RESET_REQUEST");
   }
 
-  const result = await verifyPhoneCode(input.phone, input.code);
+  const result = await verifyPhoneCode(resetPhone, input.code);
 
   if (result?.status !== "approved") {
     throw new Error("INVALID_OTP");

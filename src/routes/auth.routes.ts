@@ -2,6 +2,7 @@ import { Router } from "express";
 
 import {
   register,
+  verifyRegistration,
   login,
   logout,
   me,
@@ -72,6 +73,7 @@ const passwordResetLimiter = rateLimit({
 });
 
 router.post("/register", registrationLimiter, register);
+router.post("/register/verify", otpVerifyLimiter, verifyRegistration);
 
 router.post("/login", loginLimiter, login);
 
