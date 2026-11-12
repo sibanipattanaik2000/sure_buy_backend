@@ -1,4 +1,3 @@
-
 import type { Request, Response } from "express";
 import crypto from "crypto";
 import { PaymentStatus, Prisma } from "@prisma/client";
@@ -70,6 +69,12 @@ export async function createPaymentOrder(req: AuthRequest, res: Response) {
             success: false,
             message: "Invalid payment amount",
           });
+        case "ORDER_REFUND_PENDING":
+          return res.status(409).json({
+            success: false,
+            message:
+              "A previous payment refund is still pending. Please contact support before making another payment.",
+          });
       }
     }
 
@@ -102,11 +107,7 @@ export async function verifyPayment(req: AuthRequest, res: Response) {
       });
     }
 
-    const {
-      razorpayPaymentId,
-      razorpayOrderId,
-      razorpaySignature,
-    } = req.body;
+    const { razorpayPaymentId, razorpayOrderId, razorpaySignature } = req.body;
 
     if (
       typeof razorpayPaymentId !== "string" ||
@@ -328,8 +329,7 @@ async function recalculateOrderPaymentStatus(
     const processedRefundsInPaise = payment.refunds
       .filter((refund) => refund.status === "PROCESSED")
       .reduce(
-        (sum, refund) =>
-          sum + Math.round(Number(refund.amount) * 100),
+        (sum, refund) => sum + Math.round(Number(refund.amount) * 100),
         0,
       );
 
@@ -340,15 +340,10 @@ async function recalculateOrderPaymentStatus(
       processedRefundsInPaise === 0 &&
       payment.status === PaymentStatus.PARTIALLY_REFUNDED
     ) {
-      refundedInPaise = Math.round(
-        Number(payment.refundAmount ?? 0) * 100,
-      );
+      refundedInPaise = Math.round(Number(payment.refundAmount ?? 0) * 100);
     }
 
-    collectedInPaise += Math.max(
-      0,
-      amountInPaise - refundedInPaise,
-    );
+    collectedInPaise += Math.max(0, amountInPaise - refundedInPaise);
   }
 
   const totalInPaise = Math.round(Number(order.totalAmount) * 100);
@@ -356,9 +351,7 @@ async function recalculateOrderPaymentStatus(
   let nextStatus: PaymentStatus;
 
   if (
-    payments.some(
-      (payment) => payment.status === PaymentStatus.REFUND_PENDING,
-    )
+    payments.some((payment) => payment.status === PaymentStatus.REFUND_PENDING)
   ) {
     nextStatus = PaymentStatus.REFUND_PENDING;
   } else if (collectedInPaise >= totalInPaise && totalInPaise > 0) {
@@ -366,15 +359,11 @@ async function recalculateOrderPaymentStatus(
   } else if (collectedInPaise > 0) {
     nextStatus = PaymentStatus.PARTIALLY_PAID;
   } else if (
-    payments.some(
-      (payment) => payment.status === PaymentStatus.AUTHORIZED,
-    )
+    payments.some((payment) => payment.status === PaymentStatus.AUTHORIZED)
   ) {
     nextStatus = PaymentStatus.AUTHORIZED;
   } else if (
-    payments.some(
-      (payment) => payment.status === PaymentStatus.PENDING,
-    )
+    payments.some((payment) => payment.status === PaymentStatus.PENDING)
   ) {
     nextStatus = PaymentStatus.PENDING;
   } else if (
@@ -392,9 +381,7 @@ async function recalculateOrderPaymentStatus(
   ) {
     nextStatus = PaymentStatus.REFUNDED;
   } else if (
-    payments.some(
-      (payment) => payment.status === PaymentStatus.FAILED,
-    )
+    payments.some((payment) => payment.status === PaymentStatus.FAILED)
   ) {
     nextStatus = PaymentStatus.FAILED;
   } else {
@@ -459,10 +446,7 @@ async function handlePaymentFailed(
         },
       });
 
-      await recalculateOrderPaymentStatus(
-        tx,
-        currentPayment.orderId,
-      );
+      await recalculateOrderPaymentStatus(tx, currentPayment.orderId);
     },
     {
       isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
@@ -505,10 +489,7 @@ async function handlePaymentAuthorized(
         },
       });
 
-      await recalculateOrderPaymentStatus(
-        tx,
-        currentPayment.orderId,
-      );
+      await recalculateOrderPaymentStatus(tx, currentPayment.orderId);
     },
     {
       isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
@@ -537,9 +518,7 @@ async function handleRefundProcessed(refundEntity: any) {
     throw new Error("INVALID_REFUND_WEBHOOK");
   }
 
-  const refundAmount = Number(
-    (refundAmountPaise / 100).toFixed(2),
-  );
+  const refundAmount = Number((refundAmountPaise / 100).toFixed(2));
 
   const noteRequestKey =
     typeof notes?.refundRequestKey === "string" &&
@@ -554,10 +533,7 @@ async function handleRefundProcessed(refundEntity: any) {
       });
 
       if (!payment) {
-        console.warn(
-          "Unknown Razorpay refund payment:",
-          providerPaymentId,
-        );
+        console.warn("Unknown Razorpay refund payment:", providerPaymentId);
         return;
       }
 
@@ -565,10 +541,7 @@ async function handleRefundProcessed(refundEntity: any) {
         where: { providerRefundId: refundId },
       });
 
-      if (
-        refundRecord &&
-        refundRecord.paymentId !== payment.id
-      ) {
+      if (refundRecord && refundRecord.paymentId !== payment.id) {
         throw new Error("REFUND_PAYMENT_MISMATCH");
       }
 
@@ -582,10 +555,7 @@ async function handleRefundProcessed(refundEntity: any) {
           })
         : null;
 
-      if (
-        requestRecord &&
-        requestRecord.paymentId !== payment.id
-      ) {
+      if (requestRecord && requestRecord.paymentId !== payment.id) {
         throw new Error("REFUND_REQUEST_PAYMENT_MISMATCH");
       }
 
@@ -672,17 +642,13 @@ async function handleRefundProcessed(refundEntity: any) {
         },
       });
 
-      await recalculateOrderPaymentStatus(
-        tx,
-        payment.orderId,
-      );
+      await recalculateOrderPaymentStatus(tx, payment.orderId);
     },
     {
       isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
     },
   );
 }
-
 
 /**
  * REFUND FAILED
@@ -709,9 +675,7 @@ async function handleRefundFailed(refundEntity: any) {
     throw new Error("INVALID_REFUND_WEBHOOK");
   }
 
-  const refundAmount = Number(
-    (refundAmountPaise / 100).toFixed(2),
-  );
+  const refundAmount = Number((refundAmountPaise / 100).toFixed(2));
 
   const noteRequestKey =
     typeof notes?.refundRequestKey === "string" &&
@@ -774,17 +738,11 @@ async function handleRefundFailed(refundEntity: any) {
           })
         : null;
 
-      if (
-        refundRecord &&
-        refundRecord.paymentId !== payment.id
-      ) {
+      if (refundRecord && refundRecord.paymentId !== payment.id) {
         throw new Error("REFUND_PAYMENT_MISMATCH");
       }
 
-      if (
-        requestRecord &&
-        requestRecord.paymentId !== payment.id
-      ) {
+      if (requestRecord && requestRecord.paymentId !== payment.id) {
         throw new Error("REFUND_REQUEST_PAYMENT_MISMATCH");
       }
 
@@ -859,10 +817,7 @@ async function handleRefundFailed(refundEntity: any) {
 
       const processedAmount = allRefunds
         .filter((item) => item.status === "PROCESSED")
-        .reduce(
-          (sum, item) => sum + Number(item.amount),
-          0,
-        );
+        .reduce((sum, item) => sum + Number(item.amount), 0);
 
       const originalAmount = Number(payment.amount);
 
@@ -872,8 +827,7 @@ async function handleRefundFailed(refundEntity: any) {
 
       const pendingRefund = allRefunds.find(
         (item) =>
-          item.status === "REQUESTED" ||
-          item.status === "MANUAL_PENDING",
+          item.status === "REQUESTED" || item.status === "MANUAL_PENDING",
       );
 
       const nextPaymentStatus = pendingRefund
@@ -893,16 +847,11 @@ async function handleRefundFailed(refundEntity: any) {
           refundId: pendingRefund?.providerRefundId ?? null,
           refundAmount: Number(processedAmount.toFixed(2)),
           refundedAt:
-            nextPaymentStatus === PaymentStatus.REFUNDED
-              ? new Date()
-              : null,
+            nextPaymentStatus === PaymentStatus.REFUNDED ? new Date() : null,
         },
       });
 
-      await recalculateOrderPaymentStatus(
-        tx,
-        payment.orderId,
-      );
+      await recalculateOrderPaymentStatus(tx, payment.orderId);
     },
     {
       isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
@@ -910,7 +859,6 @@ async function handleRefundFailed(refundEntity: any) {
     },
   );
 }
-
 
 /**
  * RAZORPAY WEBHOOK
@@ -1018,10 +966,7 @@ export async function razorpayWebhook(req: Request, res: Response) {
     });
 
     if (!payment) {
-      console.warn(
-        "Unknown Razorpay payment order:",
-        razorpayOrderId,
-      );
+      console.warn("Unknown Razorpay payment order:", razorpayOrderId);
 
       return res.status(200).json({
         success: true,
@@ -1031,11 +976,7 @@ export async function razorpayWebhook(req: Request, res: Response) {
 
     // PAYMENT FAILED
     if (event === "payment.failed") {
-      await handlePaymentFailed(
-        payment.id,
-        razorpayPaymentId,
-        paymentEntity,
-      );
+      await handlePaymentFailed(payment.id, razorpayPaymentId, paymentEntity);
 
       return res.status(200).json({
         success: true,
@@ -1045,10 +986,7 @@ export async function razorpayWebhook(req: Request, res: Response) {
 
     // PAYMENT AUTHORIZED
     if (event === "payment.authorized") {
-      await handlePaymentAuthorized(
-        payment.id,
-        razorpayPaymentId,
-      );
+      await handlePaymentAuthorized(payment.id, razorpayPaymentId);
 
       return res.status(200).json({
         success: true,
@@ -1068,9 +1006,7 @@ export async function razorpayWebhook(req: Request, res: Response) {
       const capturedAmount = paymentEntity?.amount;
       const capturedCurrency = paymentEntity?.currency;
 
-      const expectedAmountPaise = Math.round(
-        Number(payment.amount) * 100,
-      );
+      const expectedAmountPaise = Math.round(Number(payment.amount) * 100);
 
       if (
         typeof capturedAmount !== "number" ||
@@ -1078,18 +1014,15 @@ export async function razorpayWebhook(req: Request, res: Response) {
         typeof capturedCurrency !== "string" ||
         capturedCurrency !== payment.currency
       ) {
-        console.error(
-          "RAZORPAY WEBHOOK AMOUNT/CURRENCY MISMATCH",
-          {
-            paymentId: payment.id,
-            amountMatches:
-              typeof capturedAmount === "number" &&
-              capturedAmount === expectedAmountPaise,
-            currencyMatches:
-              typeof capturedCurrency === "string" &&
-              capturedCurrency === payment.currency,
-          },
-        );
+        console.error("RAZORPAY WEBHOOK AMOUNT/CURRENCY MISMATCH", {
+          paymentId: payment.id,
+          amountMatches:
+            typeof capturedAmount === "number" &&
+            capturedAmount === expectedAmountPaise,
+          currencyMatches:
+            typeof capturedCurrency === "string" &&
+            capturedCurrency === payment.currency,
+        });
 
         return res.status(400).json({
           success: false,
