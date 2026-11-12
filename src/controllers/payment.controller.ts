@@ -683,27 +683,55 @@ async function handleRefundProcessed(refundEntity: any) {
   );
 }
 
+
 /**
  * REFUND FAILED
  *
- * Keep the payment REFUND_PENDING because there is no separate
- * REFUND_FAILED status in the current payment enum.
+ * Record the provider-confirmed failure in the refund ledger.
+ * Do not leave a failed refund as REQUESTED.
+ *
+ * A failed refund does not mean the original payment was reversed.
+ * The customer still has the previously captured payment, less
+ * any other refunds that have actually been processed.
  */
 async function handleRefundFailed(refundEntity: any) {
   const providerPaymentId = refundEntity?.payment_id;
   const refundId = refundEntity?.id;
+  const refundAmountPaise = refundEntity?.amount;
+  const notes = refundEntity?.notes;
 
-  if (typeof providerPaymentId !== "string") {
+  if (
+    typeof providerPaymentId !== "string" ||
+    typeof refundId !== "string" ||
+    !Number.isSafeInteger(refundAmountPaise) ||
+    refundAmountPaise <= 0
+  ) {
     throw new Error("INVALID_REFUND_WEBHOOK");
   }
 
+  const refundAmount = Number(
+    (refundAmountPaise / 100).toFixed(2),
+  );
+
+  const noteRequestKey =
+    typeof notes?.refundRequestKey === "string" &&
+    notes.refundRequestKey.startsWith("pb_")
+      ? notes.refundRequestKey
+      : undefined;
+
   await prisma.$transaction(
     async (tx) => {
-      const payment = await tx.payment.findFirst({
-        where: { providerPaymentId },
+      const paymentReference = await tx.payment.findFirst({
+        where: {
+          providerPaymentId,
+        },
+        select: {
+          id: true,
+          orderId: true,
+        },
       });
 
-      if (!payment) {
+      if (!paymentReference) {
         console.warn(
           "Unknown Razorpay failed refund payment:",
           providerPaymentId,
@@ -711,26 +739,163 @@ async function handleRefundFailed(refundEntity: any) {
         return;
       }
 
+      // Serialize refund updates for this order.
+      await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT "id"
+        FROM "Order"
+        WHERE "id" = ${paymentReference.orderId}
+        FOR UPDATE
+      `;
+
+      const payment = await tx.payment.findUnique({
+        where: {
+          id: paymentReference.id,
+        },
+        include: {
+          refunds: true,
+        },
+      });
+
+      if (!payment) {
+        throw new Error("PAYMENT_NOT_FOUND");
+      }
+
+      let refundRecord = await tx.paymentRefund.findUnique({
+        where: {
+          providerRefundId: refundId,
+        },
+      });
+
+      let requestRecord = noteRequestKey
+        ? await tx.paymentRefund.findUnique({
+            where: {
+              requestKey: noteRequestKey,
+            },
+          })
+        : null;
+
       if (
-        payment.status === PaymentStatus.REFUNDED ||
-        payment.status === PaymentStatus.PARTIALLY_REFUNDED
+        refundRecord &&
+        refundRecord.paymentId !== payment.id
       ) {
+        throw new Error("REFUND_PAYMENT_MISMATCH");
+      }
+
+      if (
+        requestRecord &&
+        requestRecord.paymentId !== payment.id
+      ) {
+        throw new Error("REFUND_REQUEST_PAYMENT_MISMATCH");
+      }
+
+      if (
+        requestRecord?.providerRefundId &&
+        requestRecord.providerRefundId !== refundId
+      ) {
+        throw new Error("REFUND_REQUEST_ID_MISMATCH");
+      }
+
+      // If the provider refund ID and request key point to two
+      // different rows, preserve the canonical provider-ID row.
+      if (
+        refundRecord &&
+        requestRecord &&
+        refundRecord.id !== requestRecord.id
+      ) {
+        if (requestRecord.status === "PROCESSED") {
+          throw new Error("REFUND_LEDGER_CONFLICT");
+        }
+
+        await tx.paymentRefund.delete({
+          where: {
+            id: requestRecord.id,
+          },
+        });
+
+        requestRecord = null;
+      }
+
+      if (!refundRecord && requestRecord) {
+        refundRecord = requestRecord;
+      }
+
+      // Duplicate webhook delivery must never downgrade a
+      // refund that has already been confirmed as processed.
+      if (refundRecord?.status === "PROCESSED") {
         return;
       }
 
-      const existingReason =
-        payment.refundReason ?? "Refund pending";
+      if (refundRecord) {
+        await tx.paymentRefund.update({
+          where: {
+            id: refundRecord.id,
+          },
+          data: {
+            providerRefundId: refundId,
+            amount: refundAmount,
+            status: "FAILED",
+            processedAt: null,
+          },
+        });
+      } else {
+        // Fallback for a provider refund that arrived before
+        // its original request record was saved.
+        await tx.paymentRefund.create({
+          data: {
+            paymentId: payment.id,
+            requestKey: `razorpay_${refundId}`,
+            providerRefundId: refundId,
+            amount: refundAmount,
+            status: "FAILED",
+          },
+        });
+      }
+
+      const allRefunds = await tx.paymentRefund.findMany({
+        where: {
+          paymentId: payment.id,
+        },
+      });
+
+      const processedAmount = allRefunds
+        .filter((item) => item.status === "PROCESSED")
+        .reduce(
+          (sum, item) => sum + Number(item.amount),
+          0,
+        );
+
+      const originalAmount = Number(payment.amount);
+
+      if (processedAmount > originalAmount) {
+        throw new Error("REFUND_TOTAL_EXCEEDS_PAYMENT_AMOUNT");
+      }
+
+      const pendingRefund = allRefunds.find(
+        (item) =>
+          item.status === "REQUESTED" ||
+          item.status === "MANUAL_PENDING",
+      );
+
+      const nextPaymentStatus = pendingRefund
+        ? PaymentStatus.REFUND_PENDING
+        : processedAmount >= originalAmount
+          ? PaymentStatus.REFUNDED
+          : processedAmount > 0
+            ? PaymentStatus.PARTIALLY_REFUNDED
+            : PaymentStatus.PAID;
 
       await tx.payment.update({
-        where: { id: payment.id },
+        where: {
+          id: payment.id,
+        },
         data: {
-          status: PaymentStatus.REFUND_PENDING,
-          refundId:
-            typeof refundId === "string"
-              ? refundId
-              : payment.refundId,
-          refundReason:
-            `${existingReason} | Razorpay refund failed or requires retry`,
+          status: nextPaymentStatus,
+          refundId: pendingRefund?.providerRefundId ?? null,
+          refundAmount: Number(processedAmount.toFixed(2)),
+          refundedAt:
+            nextPaymentStatus === PaymentStatus.REFUNDED
+              ? new Date()
+              : null,
         },
       });
 
@@ -741,9 +906,11 @@ async function handleRefundFailed(refundEntity: any) {
     },
     {
       isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      timeout: 15000,
     },
   );
 }
+
 
 /**
  * RAZORPAY WEBHOOK
