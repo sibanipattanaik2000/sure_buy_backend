@@ -85,8 +85,22 @@ function serializeAdminOrder(order: any) {
 
     paidAmount,
     remainingAmount: Number(Math.max(0, totalAmount - paidAmount).toFixed(2)),
-
     currency: order.currency,
+
+    // Shiprocket tracking information
+    shiprocket: {
+      orderId: order.shiprocketOrderId ?? null,
+      shipmentId: order.shiprocketShipmentId ?? null,
+      awbCode: order.shiprocketAwbCode ?? null,
+      courierName: order.shiprocketCourierName ?? null,
+      trackingUrl: order.shiprocketTrackingUrl ?? null,
+      status: order.shiprocketStatus ?? null,
+      statusCode: order.shiprocketStatusCode ?? null,
+      lastEventAt: order.shiprocketLastEventAt ?? null,
+      pickupScheduledAt: order.shiprocketPickupScheduledAt ?? null,
+      shippedAt: order.shiprocketShippedAt ?? null,
+      deliveredAt: order.shiprocketDeliveredAt ?? null,
+    },
 
     customer: {
       id: order.user?.id ?? order.userId,
@@ -101,6 +115,8 @@ function serializeAdminOrder(order: any) {
       phone: order.shippingPhone,
       addressLine1: order.shippingAddressLine1,
       addressLine2: order.shippingAddressLine2,
+      area: order.shippingArea,
+      landmark: order.shippingLandmark,
       city: order.shippingCity,
       state: order.shippingState,
       postalCode: order.shippingPostalCode,

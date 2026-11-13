@@ -48,7 +48,7 @@ const envSchema = z.object({
     .string()
     .regex(/^\d{6}$/)
     .optional(),
-
+  SHIPROCKET_PICKUP_LOCATION: z.string().min(1).optional(),
   SHIPROCKET_DEFAULT_WEIGHT_KG: z.coerce.number().positive().optional(),
   SHIPROCKET_DEFAULT_LENGTH_CM: z.coerce.number().positive().optional(),
   SHIPROCKET_DEFAULT_BREADTH_CM: z.coerce.number().positive().optional(),
