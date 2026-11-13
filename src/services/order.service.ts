@@ -302,7 +302,12 @@ export async function createOrder(userId: string, input: CreateOrderInput) {
       if (!address) {
         throw new Error("ADDRESS_NOT_FOUND");
       }
-
+      if (
+        !/^7[5-7]\d{4}$/.test(address.postalCode) ||
+        !/^(odisha|orissa)$/i.test(address.state.trim())
+      ) {
+        throw new Error("DELIVERY_ONLY_ODISHA");
+      }
       /*
        * =====================================================
        * 2. Load cart with CURRENT database product data

@@ -18,7 +18,10 @@ type ServiceabilityResponse = {
   };
 };
 
-export async function getDeliveryServiceability(deliveryPostcode: string) {
+export async function getDeliveryServiceability(
+  deliveryPostcode: string,
+  paymentMethod: "COD" | "PREPAID",
+) {
   const pickupPostcode = env.SHIPROCKET_PICKUP_POSTCODE;
 
   if (!pickupPostcode) {
@@ -28,7 +31,7 @@ export async function getDeliveryServiceability(deliveryPostcode: string) {
   const params = new URLSearchParams({
     pickup_postcode: pickupPostcode,
     delivery_postcode: deliveryPostcode,
-    cod: "0",
+    cod: paymentMethod === "COD" ? "1" : "0",
     weight: String(env.SHIPROCKET_DEFAULT_WEIGHT_KG ?? 0.5),
     length: String(env.SHIPROCKET_DEFAULT_LENGTH_CM ?? 20),
     breadth: String(env.SHIPROCKET_DEFAULT_BREADTH_CM ?? 15),

@@ -9,6 +9,7 @@ import { prisma } from "../config/prisma";
 import { env } from "../config/env";
 
 import {
+  ShiprocketApiError,
   createShiprocketOrder,
   getShiprocketToken,
   type ShiprocketCreateOrderPayload,
@@ -17,6 +18,11 @@ import {
   generateShiprocketManifest,
 } from "./shiprocket.service";
 
+function isDefiniteShiprocketRejection(error: unknown): boolean {
+  return (
+    error instanceof ShiprocketApiError && [400, 422].includes(error.status)
+  );
+}
 /**
  * Calculate the actual amount collected from the customer.
  *
@@ -286,7 +292,12 @@ async function reserveOrderForShipment(
         order.shippingPostalCode,
         "POSTAL_CODE",
       );
-
+      if (
+        !/^7[5-7]\d{4}$/.test(validatedPostalCode) ||
+        !/^(odisha|orissa)$/i.test(validatedState)
+      ) {
+        throw new Error("SHIPROCKET_DELIVERY_ONLY_ODISHA");
+      }
       const validatedCountry = requiredValue(
         order.shippingCountry || "India",
         "COUNTRY",
@@ -492,19 +503,15 @@ export async function createAdminShiprocketShipment(orderId: string) {
       status: response.status || "ORDER_CREATED",
     };
   } catch (error) {
-    /**
-     * An API timeout can happen even after Shiprocket
-     * has successfully created the order.
-     *
-     * Keep the reservation to prevent duplicate creation.
-     */
+    const rejected = isDefiniteShiprocketRejection(error);
+
     await prisma.order.updateMany({
       where: {
         id: order.id,
         shiprocketStatus: "CREATING",
       },
       data: {
-        shiprocketStatus: "CREATION_UNCERTAIN",
+        shiprocketStatus: rejected ? "CREATION_FAILED" : "CREATION_UNCERTAIN",
         shiprocketLastEventAt: new Date(),
       },
     });
@@ -514,7 +521,11 @@ export async function createAdminShiprocketShipment(orderId: string) {
       error instanceof Error ? error.message : "Unknown error",
     );
 
-    throw new Error("SHIPROCKET_CREATION_UNCERTAIN");
+    throw new Error(
+      rejected
+        ? "SHIPROCKET_CREATION_REJECTED"
+        : "SHIPROCKET_CREATION_UNCERTAIN",
+    );
   }
 }
 
@@ -624,13 +635,17 @@ export async function assignAdminShiprocketAwb(
       shipmentId: order.shiprocketShipmentId,
     };
   } catch (error) {
+    const rejected = isDefiniteShiprocketRejection(error);
+
     await prisma.order.updateMany({
       where: {
         id: order.id,
         shiprocketStatus: "AWB_ASSIGNING",
       },
       data: {
-        shiprocketStatus: "AWB_ASSIGNMENT_UNCERTAIN",
+        shiprocketStatus: rejected
+          ? "AWB_ASSIGNMENT_FAILED"
+          : "AWB_ASSIGNMENT_UNCERTAIN",
         shiprocketLastEventAt: new Date(),
       },
     });
@@ -640,7 +655,11 @@ export async function assignAdminShiprocketAwb(
       error instanceof Error ? error.message : "Unknown error",
     );
 
-    throw new Error("SHIPROCKET_AWB_ASSIGNMENT_UNCERTAIN");
+    throw new Error(
+      rejected
+        ? "SHIPROCKET_AWB_ASSIGNMENT_REJECTED"
+        : "SHIPROCKET_AWB_ASSIGNMENT_UNCERTAIN",
+    );
   }
 }
 
@@ -730,7 +749,11 @@ export async function scheduleAdminShiprocketPickup(orderId: string) {
     const response = await scheduleShiprocketPickup(shipmentId);
 
     if (response.pickup_status === 0) {
-      throw new Error("SHIPROCKET_PICKUP_REQUEST_UNCERTAIN");
+      throw new Error("SHIPROCKET_PICKUP_REJECTED");
+    }
+
+    if (response.pickup_status !== 1) {
+      throw new Error("SHIPROCKET_PICKUP_RESPONSE_UNCLEAR");
     }
 
     const rawDate = response.response?.pickup_scheduled_date;
@@ -755,13 +778,20 @@ export async function scheduleAdminShiprocketPickup(orderId: string) {
       response,
     };
   } catch (error) {
+    const rejected =
+      isDefiniteShiprocketRejection(error) ||
+      (error instanceof Error &&
+        error.message === "SHIPROCKET_PICKUP_REJECTED");
+
     await prisma.order.updateMany({
       where: {
         id: order.id,
         shiprocketStatus: "PICKUP_REQUESTING",
       },
       data: {
-        shiprocketStatus: "PICKUP_REQUEST_UNCERTAIN",
+        shiprocketStatus: rejected
+          ? "PICKUP_REQUEST_FAILED"
+          : "PICKUP_REQUEST_UNCERTAIN",
         shiprocketLastEventAt: new Date(),
       },
     });
@@ -771,7 +801,11 @@ export async function scheduleAdminShiprocketPickup(orderId: string) {
       error instanceof Error ? error.message : "Unknown error",
     );
 
-    throw new Error("SHIPROCKET_PICKUP_REQUEST_UNCERTAIN");
+    throw new Error(
+      rejected
+        ? "SHIPROCKET_PICKUP_REJECTED"
+        : "SHIPROCKET_PICKUP_REQUEST_UNCERTAIN",
+    );
   }
 }
 

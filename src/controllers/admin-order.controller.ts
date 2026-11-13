@@ -68,6 +68,11 @@ function sendAdminOrderError(
     SHIPROCKET_PICKUP_REQUEST_UNCERTAIN: 502,
     SHIPROCKET_MANIFEST_REQUIRES_PICKUP: 409,
     SHIPROCKET_MANIFEST_FAILED: 502,
+    SHIPROCKET_DELIVERY_ONLY_ODISHA: 409,
+    SHIPROCKET_CREATION_REJECTED: 422,
+    SHIPROCKET_AWB_ASSIGNMENT_REJECTED: 422,
+    SHIPROCKET_PICKUP_REJECTED: 422,
+    SHIPROCKET_PICKUP_RESPONSE_UNCLEAR: 502,
   };
 
   const status = statusByError[message];
@@ -348,7 +353,11 @@ export async function assignAdminShiprocketAwbController(
 
     let courierId: number | undefined;
 
-    if (rawCourierId !== undefined && rawCourierId !== null && rawCourierId !== "") {
+    if (
+      rawCourierId !== undefined &&
+      rawCourierId !== null &&
+      rawCourierId !== ""
+    ) {
       courierId = Number(rawCourierId);
 
       if (!Number.isInteger(courierId) || courierId <= 0) {
@@ -359,10 +368,7 @@ export async function assignAdminShiprocketAwbController(
       }
     }
 
-    const result = await assignAdminShiprocketAwb(
-      orderId,
-      courierId,
-    );
+    const result = await assignAdminShiprocketAwb(orderId, courierId);
 
     return res.status(200).json({
       success: true,

@@ -18,41 +18,26 @@ export const createAddressSchema = z.object({
     .min(5, "Address must be at least 5 characters")
     .max(200, "Address is too long"),
 
-  addressLine2: z
-    .string()
-    .trim()
-    .max(200, "Address is too long")
-    .optional(),
+  addressLine2: z.string().trim().max(200, "Address is too long").optional(),
 
-  city: z
-    .string()
-    .trim()
-    .min(2, "City is required")
-    .max(100),
-
+  city: z.string().trim().min(2, "City is required").max(100),
   state: z
     .string()
     .trim()
-    .min(2, "State is required")
+    .refine(
+      (value) => /^(odisha|orissa)$/i.test(value),
+      "PhoneBhai currently delivers only within Odisha",
+    )
     .max(100),
 
   postalCode: z
     .string()
     .trim()
-    .regex(/^\d{6}$/, "Enter a valid 6-digit postal code"),
+    .regex(/^7[5-7]\d{4}$/, "Enter a valid Odisha 6-digit PIN code"),
 
-  country: z
-    .string()
-    .trim()
-    .min(2)
-    .max(100)
-    .default("India"),
+  country: z.string().trim().min(2).max(100).default("India"),
 
-  landmark: z
-    .string()
-    .trim()
-    .max(150)
-    .optional(),
+  landmark: z.string().trim().max(150).optional(),
 
   isDefault: z.boolean().optional().default(false),
 });

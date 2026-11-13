@@ -1,4 +1,3 @@
-
 import type { Request, Response } from "express";
 import { timingSafeEqual } from "node:crypto";
 import { env } from "../config/env";
@@ -7,22 +6,32 @@ import {
   processShiprocketWebhook,
 } from "../services/delivery.service";
 
-export async function checkDeliveryServiceability(
-  req: Request,
-  res: Response,
-) {
+export async function checkDeliveryServiceability(req: Request, res: Response) {
   const pincode = String(req.query.pincode ?? "").trim();
 
-  if (!/^\d{6}$/.test(pincode)) {
+  const paymentMethod = String(req.query.paymentMethod ?? "PREPAID")
+    .trim()
+    .toUpperCase();
+
+  if (!/^7[5-7]\d{4}$/.test(pincode)) {
     return res.status(400).json({
       success: false,
-      message: "Please provide a valid 6-digit PIN code.",
+      message: "PhoneBhai currently delivers only within Odisha.",
+    });
+  }
+
+  if (!["COD", "PREPAID"].includes(paymentMethod)) {
+    return res.status(400).json({
+      success: false,
+      message: "Invalid delivery payment method.",
     });
   }
 
   try {
-    const result = await getDeliveryServiceability(pincode);
-
+    const result = await getDeliveryServiceability(
+      pincode,
+      paymentMethod as "COD" | "PREPAID",
+    );
     return res.status(200).json({
       success: true,
       data: result,
@@ -41,10 +50,7 @@ export async function checkDeliveryServiceability(
   }
 }
 
-export async function receiveDeliveryEvent(
-  req: Request,
-  res: Response,
-) {
+export async function receiveDeliveryEvent(req: Request, res: Response) {
   const expectedToken = env.SHIPROCKET_WEBHOOK_TOKEN;
 
   if (!expectedToken) {
@@ -60,8 +66,7 @@ export async function receiveDeliveryEvent(
   const supplied = Buffer.from(suppliedToken);
 
   const valid =
-    expected.length === supplied.length &&
-    timingSafeEqual(expected, supplied);
+    expected.length === supplied.length && timingSafeEqual(expected, supplied);
 
   if (!valid) {
     return res.status(401).json({

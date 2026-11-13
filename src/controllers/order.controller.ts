@@ -10,55 +10,6 @@ import {
 
 import { createOrderSchema } from "../validators/order.validator";
 
-// function handleOrderError(
-//   error: unknown,
-//   res: Response,
-//   operation: string,
-// ) {
-//   console.error(`[${operation}]`, {
-//     name: error instanceof Error ? error.name : typeof error,
-//     message: error instanceof Error ? error.message : error,
-//     stack: error instanceof Error ? error.stack : undefined,
-//     code:
-//       typeof error === "object" &&
-//       error !== null &&
-//       "code" in error
-//         ? (error as { code?: unknown }).code
-//         : undefined,
-//     meta:
-//       typeof error === "object" &&
-//       error !== null &&
-//       "meta" in error
-//         ? (error as { meta?: unknown }).meta
-//         : undefined,
-//   });
-
-//   const message =
-//     error instanceof Error
-//       ? error.message
-//       : "Internal server error";
-
-//   const statusByError: Record<string, number> = {
-//     ADDRESS_NOT_FOUND: 404,
-//     CART_EMPTY: 400,
-//     PRODUCT_UNAVAILABLE: 409,
-//     INVALID_CART_QUANTITY: 400,
-//     VARIANT_REQUIRED: 400,
-//     VARIANT_INVALID: 400,
-//     OUT_OF_STOCK: 409,
-//     INSUFFICIENT_STOCK: 409,
-//     ORDER_NUMBER_GENERATION_FAILED: 500,
-//     ORDER_NOT_FOUND: 404,
-//     ORDER_CANNOT_BE_CANCELLED: 409,
-//   };
-
-//   const status = statusByError[message] ?? 500;
-
-//   return res.status(status).json({
-//     success: false,
-//     message,
-//   });
-// }
 function handleOrderError(error: unknown, res: Response, operation: string) {
   console.error(`[${operation}]`, {
     name: error instanceof Error ? error.name : typeof error,
@@ -88,7 +39,7 @@ function handleOrderError(error: unknown, res: Response, operation: string) {
     OUT_OF_STOCK: 409,
     INSUFFICIENT_STOCK: 409,
     ORDER_NUMBER_GENERATION_FAILED: 500,
-
+    DELIVERY_ONLY_ODISHA: 400,
     // Order lookup / cancellation
     ORDER_NOT_FOUND: 404,
     ORDER_CANNOT_BE_CANCELLED: 409,
@@ -110,6 +61,8 @@ function handleOrderError(error: unknown, res: Response, operation: string) {
     INVALID_COUPON: "This coupon code is invalid.",
     COUPON_MINIMUM_NOT_MET:
       "SureDISCOUNT requires an order subtotal greater than ₹1,000.",
+    DELIVERY_ONLY_ODISHA:
+      "PhoneBhai currently delivers only within Odisha. Please update your delivery address.",
   };
 
   return res.status(status).json({
