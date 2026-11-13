@@ -1,6 +1,11 @@
 import type { Response, NextFunction } from "express";
 import type { AuthRequest } from "../middleware/auth.middleware";
-import { createAdminShiprocketShipment } from "../services/admin-shiprocket.service";
+import {
+  createAdminShiprocketShipment,
+  assignAdminShiprocketAwb,
+  scheduleAdminShiprocketPickup,
+  generateAdminShiprocketManifest,
+} from "../services/admin-shiprocket.service";
 import {
   getAdminOrders,
   recordCashCollection,
@@ -55,6 +60,14 @@ function sendAdminOrderError(
     SHIPROCKET_PARCEL_DIMENSIONS_NOT_CONFIGURED: 503,
     SHIPROCKET_CREATION_UNCERTAIN: 502,
     SHIPROCKET_MISSING_COUNTRY: 400,
+    SHIPROCKET_SHIPMENT_NOT_CREATED: 409,
+    SHIPROCKET_AWB_REQUIRED: 409,
+    SHIPROCKET_AWB_ASSIGNMENT_IN_PROGRESS: 409,
+    SHIPROCKET_AWB_ASSIGNMENT_UNCERTAIN: 502,
+    SHIPROCKET_PICKUP_IN_PROGRESS: 409,
+    SHIPROCKET_PICKUP_REQUEST_UNCERTAIN: 502,
+    SHIPROCKET_MANIFEST_REQUIRES_PICKUP: 409,
+    SHIPROCKET_MANIFEST_FAILED: 502,
   };
 
   const status = statusByError[message];
@@ -310,6 +323,108 @@ export async function createAdminShiprocketShipmentController(
     return res.status(200).json({
       success: true,
       message: "Shiprocket order created successfully",
+      data: result,
+    });
+  } catch (error) {
+    return sendAdminOrderError(error, res, next);
+  }
+}
+
+export async function assignAdminShiprocketAwbController(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    if (!req.userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Authentication required",
+      });
+    }
+
+    const orderId = String(req.params.orderId ?? "").trim();
+    const rawCourierId = req.body?.courierId;
+
+    let courierId: number | undefined;
+
+    if (rawCourierId !== undefined && rawCourierId !== null && rawCourierId !== "") {
+      courierId = Number(rawCourierId);
+
+      if (!Number.isInteger(courierId) || courierId <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid courier ID",
+        });
+      }
+    }
+
+    const result = await assignAdminShiprocketAwb(
+      orderId,
+      courierId,
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: result.alreadyAssigned
+        ? "AWB is already assigned"
+        : "AWB assigned successfully",
+      data: result,
+    });
+  } catch (error) {
+    return sendAdminOrderError(error, res, next);
+  }
+}
+
+export async function scheduleAdminShiprocketPickupController(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    if (!req.userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Authentication required",
+      });
+    }
+
+    const orderId = String(req.params.orderId ?? "").trim();
+
+    const result = await scheduleAdminShiprocketPickup(orderId);
+
+    return res.status(200).json({
+      success: true,
+      message: result.alreadyScheduled
+        ? "Pickup has already been requested"
+        : "Pickup request submitted successfully",
+      data: result,
+    });
+  } catch (error) {
+    return sendAdminOrderError(error, res, next);
+  }
+}
+
+export async function generateAdminShiprocketManifestController(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    if (!req.userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Authentication required",
+      });
+    }
+
+    const orderId = String(req.params.orderId ?? "").trim();
+
+    const result = await generateAdminShiprocketManifest(orderId);
+
+    return res.status(200).json({
+      success: true,
+      message: "Manifest generated successfully",
       data: result,
     });
   } catch (error) {

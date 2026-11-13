@@ -12,6 +12,9 @@ import {
   getAdminOrdersController,
   recordAdminCashCollectionController,
   createAdminShiprocketShipmentController,
+  assignAdminShiprocketAwbController,
+  scheduleAdminShiprocketPickupController,
+  generateAdminShiprocketManifestController,
 } from "../controllers/admin-order.controller";
 
 const router = Router();
@@ -22,10 +25,7 @@ router.use(requireAdmin);
 
 router.get("/", getAdminOrdersController);
 
-router.post(
-  "/:orderId/cash-collection",
-  recordAdminCashCollectionController,
-);
+router.post("/:orderId/cash-collection", recordAdminCashCollectionController);
 router.post(
   "/:orderId/cash-refunds/:refundId/confirm",
   confirmAdminCashRefundController,
@@ -40,8 +40,16 @@ router.post(
   "/:orderId/refunds/:refundId/retry",
   retryAdminRazorpayRefundController,
 );
+router.post("/:orderId/shiprocket", createAdminShiprocketShipmentController);
+router.post("/:orderId/shiprocket/awb", assignAdminShiprocketAwbController);
+
 router.post(
-  "/:orderId/shiprocket",
-  createAdminShiprocketShipmentController,
+  "/:orderId/shiprocket/pickup",
+  scheduleAdminShiprocketPickupController,
+);
+
+router.post(
+  "/:orderId/shiprocket/manifest",
+  generateAdminShiprocketManifestController,
 );
 export default router;
