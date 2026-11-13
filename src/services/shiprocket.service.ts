@@ -159,3 +159,200 @@ export async function shiprocketRequest<T>(
 
   throw new Error("SHIPROCKET_AUTHENTICATION_RETRY_FAILED");
 }
+/**
+ * ============================================================
+ * SHIPROCKET ORDER / SHIPMENT OPERATIONS
+ * ============================================================
+ */
+
+export type ShiprocketCreateOrderPayload = {
+  order_id: string;
+  order_date: string;
+  pickup_location: string;
+
+  billing_customer_name: string;
+  billing_last_name: string;
+  billing_address: string;
+  billing_address_2?: string;
+  billing_city: string;
+  billing_pincode: string;
+  billing_state: string;
+  billing_country: string;
+  billing_email: string;
+  billing_phone: string;
+
+  shipping_is_billing: boolean;
+
+  shipping_customer_name?: string;
+  shipping_last_name?: string;
+  shipping_address?: string;
+  shipping_address_2?: string;
+  shipping_city?: string;
+  shipping_pincode?: string;
+  shipping_state?: string;
+  shipping_country?: string;
+  shipping_email?: string;
+  shipping_phone?: string;
+
+  order_items: Array<{
+    name: string;
+    sku: string;
+    units: number;
+    selling_price: number;
+  }>;
+
+  payment_method: "Prepaid" | "COD";
+  sub_total: number;
+  length: number;
+  breadth: number;
+  height: number;
+  weight: number;
+  cod_amount?: number;
+};
+
+export type ShiprocketCreateOrderResponse = {
+  order_id?: number;
+  shipment_id?: number;
+  status?: string;
+  status_code?: number;
+  message?: string;
+  [key: string]: unknown;
+};
+
+export type ShiprocketAwbResponse = {
+  awb_assign_status?: number;
+  response?: {
+    data?: {
+      awb_code?: string;
+      courier_name?: string;
+      courier_company_id?: number;
+      pickup_scheduled_date?: string;
+      routing_code?: string;
+      [key: string]: unknown;
+    };
+    [key: string]: unknown;
+  };
+  message?: string;
+  [key: string]: unknown;
+};
+
+export type ShiprocketPickupResponse = {
+  pickup_status?: number;
+  response?: {
+    pickup_scheduled_date?: string;
+    pickup_token_number?: string;
+    [key: string]: unknown;
+  };
+  message?: string;
+  [key: string]: unknown;
+};
+
+export type ShiprocketManifestResponse = {
+  status?: number;
+  manifest_url?: string;
+  message?: string;
+  [key: string]: unknown;
+};
+
+/**
+ * Create a custom order in Shiprocket.
+ *
+ * IMPORTANT:
+ * This only creates the order in Shiprocket.
+ * It does not assign an AWB or schedule a pickup.
+ */
+export async function createShiprocketOrder(
+  payload: ShiprocketCreateOrderPayload,
+): Promise<ShiprocketCreateOrderResponse> {
+  return shiprocketRequest<ShiprocketCreateOrderResponse>(
+    "/orders/create/adhoc",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+/**
+ * Assign a courier and AWB to an existing shipment.
+ */
+export async function assignShiprocketAwb(
+  shipmentId: number,
+  courierId?: number,
+): Promise<ShiprocketAwbResponse> {
+  if (!Number.isInteger(shipmentId) || shipmentId <= 0) {
+    throw new Error("INVALID_SHIPROCKET_SHIPMENT_ID");
+  }
+
+  return shiprocketRequest<ShiprocketAwbResponse>(
+    "/courier/assign/awb",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        shipment_id: shipmentId,
+        ...(courierId ? { courier_id: courierId } : {}),
+      }),
+    },
+  );
+}
+
+/**
+ * Request pickup after an AWB has been assigned.
+ */
+export async function scheduleShiprocketPickup(
+  shipmentId: number,
+): Promise<ShiprocketPickupResponse> {
+  if (!Number.isInteger(shipmentId) || shipmentId <= 0) {
+    throw new Error("INVALID_SHIPROCKET_SHIPMENT_ID");
+  }
+
+  return shiprocketRequest<ShiprocketPickupResponse>(
+    "/courier/generate/pickup",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        shipment_id: shipmentId,
+      }),
+    },
+  );
+}
+
+/**
+ * Generate a manifest after AWB assignment and pickup request.
+ */
+export async function generateShiprocketManifest(
+  shipmentId: number,
+): Promise<ShiprocketManifestResponse> {
+  if (!Number.isInteger(shipmentId) || shipmentId <= 0) {
+    throw new Error("INVALID_SHIPROCKET_SHIPMENT_ID");
+  }
+
+  return shiprocketRequest<ShiprocketManifestResponse>(
+    "/manifests/generate",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        shipment_id: [shipmentId],
+      }),
+    },
+  );
+}
+
+/**
+ * Fetch the latest Shiprocket order details.
+ * Useful for reconciliation if an API request times out.
+ */
+export async function getShiprocketOrder(
+  shiprocketOrderId: number,
+): Promise<Record<string, unknown>> {
+  if (!Number.isInteger(shiprocketOrderId) || shiprocketOrderId <= 0) {
+    throw new Error("INVALID_SHIPROCKET_ORDER_ID");
+  }
+
+  return shiprocketRequest<Record<string, unknown>>(
+    `/orders/show/${shiprocketOrderId}`,
+    {
+      method: "GET",
+    },
+  );
+}

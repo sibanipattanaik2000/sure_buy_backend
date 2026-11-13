@@ -1,4 +1,3 @@
-
 import "dotenv/config";
 import { z } from "zod";
 
@@ -24,9 +23,7 @@ const envSchema = z.object({
   R2_SECRET_ACCESS_KEY: z.string().min(1, "R2_SECRET_ACCESS_KEY is required"),
   R2_BUCKET_NAME: z.string().min(1, "R2_BUCKET_NAME is required"),
 
-  R2_PUBLIC_BASE_URL: z
-    .string()
-    .url("R2_PUBLIC_BASE_URL must be a valid URL"),
+  R2_PUBLIC_BASE_URL: z.string().url("R2_PUBLIC_BASE_URL must be a valid URL"),
 
   RAZORPAY_KEY_ID: z.string().min(1, "RAZORPAY_KEY_ID is required"),
   RAZORPAY_KEY_SECRET: z.string().min(1, "RAZORPAY_KEY_SECRET is required"),
@@ -47,7 +44,15 @@ const envSchema = z.object({
   SHIPROCKET_EMAIL: z.string().email().optional(),
   SHIPROCKET_PASSWORD: z.string().min(1).optional(),
   SHIPROCKET_WEBHOOK_TOKEN: z.string().min(32).optional(),
+  SHIPROCKET_PICKUP_POSTCODE: z
+    .string()
+    .regex(/^\d{6}$/)
+    .optional(),
 
+  SHIPROCKET_DEFAULT_WEIGHT_KG: z.coerce.number().positive().optional(),
+  SHIPROCKET_DEFAULT_LENGTH_CM: z.coerce.number().positive().optional(),
+  SHIPROCKET_DEFAULT_BREADTH_CM: z.coerce.number().positive().optional(),
+  SHIPROCKET_DEFAULT_HEIGHT_CM: z.coerce.number().positive().optional(),
   UPSTASH_REDIS_REST_URL: z.string().url().optional(),
   UPSTASH_REDIS_REST_TOKEN: z.string().min(1).optional(),
 });
