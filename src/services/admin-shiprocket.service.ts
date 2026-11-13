@@ -1,3 +1,4 @@
+
 import {
   OrderStatus,
   PaymentMethod,
@@ -14,6 +15,12 @@ import {
   type ShiprocketCreateOrderPayload,
 } from "./shiprocket.service";
 
+/**
+ * Calculate the actual amount collected from the customer.
+ *
+ * Captured payments are counted, while processed refunds
+ * are deducted from the collected amount.
+ */
 function calculateCollectedAmount(
   payments: Array<{
     amount: Prisma.Decimal | number;
@@ -42,7 +49,11 @@ function calculateCollectedAmount(
 
     const processedRefunds = (payment.refunds ?? [])
       .filter((refund) => refund.status === "PROCESSED")
-      .reduce((refundTotal, refund) => refundTotal + Number(refund.amount), 0);
+      .reduce(
+        (refundTotal, refund) =>
+          refundTotal + Number(refund.amount),
+        0,
+      );
 
     let refunded = processedRefunds;
 
@@ -53,7 +64,10 @@ function calculateCollectedAmount(
     ) {
       refunded = Number(payment.refundAmount ?? 0);
 
-      if (payment.status === PaymentStatus.REFUNDED && refunded === 0) {
+      if (
+        payment.status === PaymentStatus.REFUNDED &&
+        refunded === 0
+      ) {
         refunded = amount;
       }
     }
@@ -64,7 +78,13 @@ function calculateCollectedAmount(
   return Number(collected.toFixed(2));
 }
 
-function requiredValue(value: string | null | undefined, field: string) {
+/**
+ * Validate a required string value.
+ */
+function requiredValue(
+  value: string | null | undefined,
+  field: string,
+) {
   const result = String(value ?? "").trim();
 
   if (!result) {
@@ -74,11 +94,14 @@ function requiredValue(value: string | null | undefined, field: string) {
   return result;
 }
 
+/**
+ * Normalize and validate an Indian mobile number.
+ */
 function normalizePhone(value: string) {
   const digits = value.replace(/\D/g, "");
 
-  // Shiprocket expects the Indian customer's 10-digit mobile number.
-  const phone = digits.length > 10 ? digits.slice(-10) : digits;
+  const phone =
+    digits.length > 10 ? digits.slice(-10) : digits;
 
   if (!/^[6-9]\d{9}$/.test(phone)) {
     throw new Error("INVALID_SHIPPING_PHONE");
@@ -87,6 +110,9 @@ function normalizePhone(value: string) {
   return phone;
 }
 
+/**
+ * Read parcel dimensions from environment configuration.
+ */
 function getParcelConfiguration() {
   const weight = env.SHIPROCKET_DEFAULT_WEIGHT_KG;
   const length = env.SHIPROCKET_DEFAULT_LENGTH_CM;
@@ -103,10 +129,17 @@ function getParcelConfiguration() {
     breadth <= 0.5 ||
     height <= 0.5
   ) {
-    throw new Error("SHIPROCKET_PARCEL_DIMENSIONS_NOT_CONFIGURED");
+    throw new Error(
+      "SHIPROCKET_PARCEL_DIMENSIONS_NOT_CONFIGURED",
+    );
   }
 
-  return { weight, length, breadth, height };
+  return {
+    weight,
+    length,
+    breadth,
+    height,
+  };
 }
 
 type ReservedOrder = {
@@ -115,6 +148,7 @@ type ReservedOrder = {
   createdAt: Date;
   totalAmount: number;
   subtotal: number;
+
   shippingFullName: string;
   shippingPhone: string;
   shippingAddressLine1: string;
@@ -125,10 +159,13 @@ type ReservedOrder = {
   shippingState: string;
   shippingPostalCode: string;
   shippingCountry: string;
-  customerEmail: string | null;
+
+  customerEmail: string;
+
   paymentMethod: PaymentMethod;
   paidAmount: number;
   remainingAmount: number;
+
   items: Array<{
     productId: number;
     productName: string;
@@ -140,6 +177,12 @@ type ReservedOrder = {
   }>;
 };
 
+/**
+ * Lock and reserve an order before creating its Shiprocket order.
+ *
+ * All customer and payment validations happen before setting
+ * shiprocketStatus to CREATING.
+ */
 async function reserveOrderForShipment(
   orderId: string,
 ): Promise<ReservedOrder> {
@@ -153,7 +196,9 @@ async function reserveOrderForShipment(
       `;
 
       const order = await tx.order.findUnique({
-        where: { id: orderId },
+        where: {
+          id: orderId,
+        },
         include: {
           user: {
             select: {
@@ -177,15 +222,22 @@ async function reserveOrderForShipment(
         throw new Error("ORDER_NOT_FOUND");
       }
 
-      if (order.shiprocketOrderId || order.shiprocketShipmentId) {
-        throw new Error("SHIPROCKET_SHIPMENT_ALREADY_CREATED");
+      if (
+        order.shiprocketOrderId ||
+        order.shiprocketShipmentId
+      ) {
+        throw new Error(
+          "SHIPROCKET_SHIPMENT_ALREADY_CREATED",
+        );
       }
 
       if (
         order.shiprocketStatus === "CREATING" ||
         order.shiprocketStatus === "CREATION_UNCERTAIN"
       ) {
-        throw new Error("SHIPROCKET_CREATION_ALREADY_IN_PROGRESS");
+        throw new Error(
+          "SHIPROCKET_CREATION_ALREADY_IN_PROGRESS",
+        );
       }
 
       if (
@@ -199,7 +251,9 @@ async function reserveOrderForShipment(
         throw new Error("ORDER_HAS_NO_ITEMS");
       }
 
-      const paidAmount = calculateCollectedAmount(order.payments);
+      const paidAmount = calculateCollectedAmount(
+        order.payments,
+      );
 
       const totalAmount = Number(order.totalAmount);
 
@@ -207,14 +261,22 @@ async function reserveOrderForShipment(
         Math.max(0, totalAmount - paidAmount).toFixed(2),
       );
 
-      if (totalAmount <= 0) {
+      if (
+        !Number.isFinite(totalAmount) ||
+        totalAmount <= 0
+      ) {
         throw new Error("INVALID_ORDER_TOTAL");
       }
 
-      // COD orders may have a partial advance payment.
-      // Shiprocket must collect only the outstanding balance.
-      if (order.paymentMethod !== PaymentMethod.COD && remainingAmount > 0.01) {
-        throw new Error("PREPAID_ORDER_HAS_OUTSTANDING_BALANCE");
+      // COD orders can have a partially paid advance.
+      // Only the outstanding balance will be collected by Shiprocket.
+      if (
+        order.paymentMethod !== PaymentMethod.COD &&
+        remainingAmount > 0.01
+      ) {
+        throw new Error(
+          "PREPAID_ORDER_HAS_OUTSTANDING_BALANCE",
+        );
       }
 
       if (
@@ -225,10 +287,55 @@ async function reserveOrderForShipment(
         throw new Error("ORDER_HAS_REFUND_ACTIVITY");
       }
 
-      // Reserve the order before making the external API call.
-      // This prevents two admins from creating duplicate shipments.
+      /**
+       * Validate customer details before reserving the order.
+       * This prevents invalid details from leaving the order
+       * stuck in CREATING.
+       */
+      const validatedFullName = requiredValue(
+        order.shippingFullName,
+        "CUSTOMER_NAME",
+      );
+
+      const validatedPhone = normalizePhone(
+        order.shippingPhone,
+      );
+
+      const validatedAddress = requiredValue(
+        order.shippingAddressLine1,
+        "ADDRESS",
+      );
+
+      const validatedEmail = requiredValue(
+        order.user.email,
+        "CUSTOMER_EMAIL",
+      );
+
+      const validatedCity = requiredValue(
+        order.shippingCity,
+        "CITY",
+      );
+
+      const validatedState = requiredValue(
+        order.shippingState,
+        "STATE",
+      );
+
+      const validatedPostalCode = requiredValue(
+        order.shippingPostalCode,
+        "POSTAL_CODE",
+      );
+
+      const validatedCountry = requiredValue(
+        order.shippingCountry || "India",
+        "COUNTRY",
+      );
+
+      // Reserve the order only after all validations succeed.
       await tx.order.update({
-        where: { id: order.id },
+        where: {
+          id: order.id,
+        },
         data: {
           shiprocketStatus: "CREATING",
           shiprocketLastEventAt: new Date(),
@@ -241,20 +348,24 @@ async function reserveOrderForShipment(
         createdAt: order.createdAt,
         totalAmount,
         subtotal: Number(order.subtotal),
-        shippingFullName: order.shippingFullName,
-        shippingPhone: order.shippingPhone,
-        shippingAddressLine1: order.shippingAddressLine1,
+
+        shippingFullName: validatedFullName,
+        shippingPhone: validatedPhone,
+        shippingAddressLine1: validatedAddress,
         shippingAddressLine2: order.shippingAddressLine2,
         shippingArea: order.shippingArea,
         shippingLandmark: order.shippingLandmark,
-        shippingCity: order.shippingCity,
-        shippingState: order.shippingState,
-        shippingPostalCode: order.shippingPostalCode,
-        shippingCountry: order.shippingCountry,
-        customerEmail: order.user.email,
+        shippingCity: validatedCity,
+        shippingState: validatedState,
+        shippingPostalCode: validatedPostalCode,
+        shippingCountry: validatedCountry,
+
+        customerEmail: validatedEmail,
+
         paymentMethod: order.paymentMethod,
         paidAmount,
         remainingAmount,
+
         items: order.items.map((item) => ({
           productId: item.productId,
           productName: item.productName,
@@ -267,13 +378,25 @@ async function reserveOrderForShipment(
       };
     },
     {
-      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      isolationLevel:
+        Prisma.TransactionIsolationLevel.Serializable,
       timeout: 15000,
     },
   );
 }
 
-export async function createAdminShiprocketShipment(orderId: string) {
+/**
+ * Create a Shiprocket order from an existing PhoneBhai order.
+ *
+ * This function does not:
+ * - Change the order's payment status.
+ * - Create or modify payment records.
+ * - Automatically assign an AWB.
+ * - Automatically schedule a pickup.
+ */
+export async function createAdminShiprocketShipment(
+  orderId: string,
+) {
   const pickupLocation = requiredValue(
     env.SHIPROCKET_PICKUP_LOCATION,
     "PICKUP_LOCATION",
@@ -284,15 +407,18 @@ export async function createAdminShiprocketShipment(orderId: string) {
   // Authenticate before reserving the order.
   await getShiprocketToken();
 
+  // Validate and reserve the order.
   const order = await reserveOrderForShipment(orderId);
 
-  const fullName = requiredValue(order.shippingFullName, "CUSTOMER_NAME");
+  const nameParts =
+    order.shippingFullName.split(/\s+/);
 
-  const nameParts = fullName.split(/\s+/);
-  const firstName = nameParts.shift() ?? fullName;
+  const firstName =
+    nameParts.shift() ?? order.shippingFullName;
+
   const lastName = nameParts.join(" ");
 
-  const address = requiredValue(order.shippingAddressLine1, "ADDRESS");
+  const address = order.shippingAddressLine1;
 
   const addressParts = [
     order.shippingAddressLine2,
@@ -302,18 +428,23 @@ export async function createAdminShiprocketShipment(orderId: string) {
 
   const address2 = addressParts.join(", ");
 
-  const phone = normalizePhone(order.shippingPhone);
-
-  const email = requiredValue(order.customerEmail, "CUSTOMER_EMAIL");
+  const phone = order.shippingPhone;
+  const email = order.customerEmail;
 
   const paymentMethod =
-    order.paymentMethod === PaymentMethod.COD && order.remainingAmount > 0.01
+    order.paymentMethod === PaymentMethod.COD &&
+    order.remainingAmount > 0.01
       ? "COD"
       : "Prepaid";
 
   const orderItems: ShiprocketCreateOrderPayload["order_items"] =
     order.items.map((item) => ({
-      name: [item.brand, item.productName, item.storage, item.color]
+      name: [
+        item.brand,
+        item.productName,
+        item.storage,
+        item.color,
+      ]
         .filter(Boolean)
         .join(" ")
         .slice(0, 100),
@@ -326,7 +457,10 @@ export async function createAdminShiprocketShipment(orderId: string) {
   const payload: ShiprocketCreateOrderPayload = {
     order_id: order.orderNumber.slice(0, 50),
 
-    order_date: order.createdAt.toISOString().slice(0, 16).replace("T", " "),
+    order_date: order.createdAt
+      .toISOString()
+      .slice(0, 16)
+      .replace("T", " "),
 
     pickup_location: pickupLocation,
 
@@ -334,10 +468,10 @@ export async function createAdminShiprocketShipment(orderId: string) {
     billing_last_name: lastName,
     billing_address: address,
     billing_address_2: address2,
-    billing_city: requiredValue(order.shippingCity, "CITY"),
-    billing_pincode: requiredValue(order.shippingPostalCode, "POSTAL_CODE"),
-    billing_state: requiredValue(order.shippingState, "STATE"),
-    billing_country: order.shippingCountry || "India",
+    billing_city: order.shippingCity,
+    billing_pincode: order.shippingPostalCode,
+    billing_state: order.shippingState,
+    billing_country: order.shippingCountry,
     billing_email: email,
     billing_phone: phone,
 
@@ -346,6 +480,7 @@ export async function createAdminShiprocketShipment(orderId: string) {
     order_items: orderItems,
 
     payment_method: paymentMethod,
+
     sub_total: order.totalAmount,
 
     length: parcel.length,
@@ -353,7 +488,11 @@ export async function createAdminShiprocketShipment(orderId: string) {
     height: parcel.height,
     weight: parcel.weight,
 
-    ...(paymentMethod === "COD" ? { cod_amount: order.remainingAmount } : {}),
+    ...(paymentMethod === "COD"
+      ? {
+          cod_amount: order.remainingAmount,
+        }
+      : {}),
   };
 
   try {
@@ -368,7 +507,9 @@ export async function createAdminShiprocketShipment(orderId: string) {
       Number(shiprocketOrderId) <= 0 ||
       Number(shipmentId) <= 0
     ) {
-      throw new Error("SHIPROCKET_RESPONSE_MISSING_IDS");
+      throw new Error(
+        "SHIPROCKET_RESPONSE_MISSING_IDS",
+      );
     }
 
     const savedOrder = await prisma.order.updateMany({
@@ -381,16 +522,22 @@ export async function createAdminShiprocketShipment(orderId: string) {
       data: {
         shiprocketOrderId: String(shiprocketOrderId),
         shiprocketShipmentId: String(shipmentId),
-        shiprocketStatus: response.status || "ORDER_CREATED",
+        shiprocketStatus:
+          response.status || "ORDER_CREATED",
         shiprocketStatusCode:
-          response.status_code == null ? null : String(response.status_code),
+          response.status_code == null
+            ? null
+            : String(response.status_code),
         shiprocketLastEventAt: new Date(),
       },
     });
 
     if (savedOrder.count !== 1) {
-      // The external order exists. Never automatically create another.
-      throw new Error("SHIPROCKET_ORDER_CREATED_BUT_LOCAL_SAVE_FAILED");
+      // Shiprocket may already have created the order.
+      // Never automatically create another shipment.
+      throw new Error(
+        "SHIPROCKET_ORDER_CREATED_BUT_LOCAL_SAVE_FAILED",
+      );
     }
 
     return {
@@ -401,12 +548,19 @@ export async function createAdminShiprocketShipment(orderId: string) {
       shipmentId: String(shipmentId),
       paymentMethod,
       paidAmount: order.paidAmount,
-      codAmount: paymentMethod === "COD" ? order.remainingAmount : 0,
+      codAmount:
+        paymentMethod === "COD"
+          ? order.remainingAmount
+          : 0,
       status: response.status || "ORDER_CREATED",
     };
   } catch (error) {
-    // A timeout may happen after Shiprocket has already created the order.
-    // Keep the reservation so another request cannot create a duplicate.
+    /**
+     * An API timeout can happen even after Shiprocket
+     * has successfully created the order.
+     *
+     * Keep the reservation to prevent duplicate creation.
+     */
     await prisma.order.updateMany({
       where: {
         id: order.id,
@@ -420,7 +574,9 @@ export async function createAdminShiprocketShipment(orderId: string) {
 
     console.error(
       "SHIPROCKET ORDER CREATION ERROR:",
-      error instanceof Error ? error.message : "Unknown error",
+      error instanceof Error
+        ? error.message
+        : "Unknown error",
     );
 
     throw new Error("SHIPROCKET_CREATION_UNCERTAIN");

@@ -11,6 +11,7 @@ import {
 import {
   getAdminOrdersController,
   recordAdminCashCollectionController,
+  createAdminShiprocketShipmentController,
 } from "../controllers/admin-order.controller";
 
 const router = Router();
@@ -39,5 +40,8 @@ router.post(
   "/:orderId/refunds/:refundId/retry",
   retryAdminRazorpayRefundController,
 );
-
+router.post(
+  "/:orderId/shiprocket",
+  createAdminShiprocketShipmentController,
+);
 export default router;
