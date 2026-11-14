@@ -434,3 +434,93 @@ export async function updateOrderItemImei(req: Request, res: Response) {
     });
   }
 }
+export async function getAdminCustomers(req: Request, res: Response) {
+  try {
+    const page = Number(req.query.page ?? 1);
+    const limit = Number(req.query.limit ?? 20);
+    const search =
+      typeof req.query.search === "string" ? req.query.search.trim() : "";
+
+    if (
+      !Number.isInteger(page) ||
+      page < 1 ||
+      !Number.isInteger(limit) ||
+      limit < 1 ||
+      limit > 50 ||
+      search.length > 100
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid pagination or search parameters",
+      });
+    }
+
+    const where = {
+      role: UserRole.CUSTOMER,
+      ...(search
+        ? {
+            OR: [
+              { id: search },
+              { firstName: { contains: search, mode: "insensitive" as const } },
+              { lastName: { contains: search, mode: "insensitive" as const } },
+              { email: { contains: search, mode: "insensitive" as const } },
+              { phone: { contains: search } },
+            ],
+          }
+        : {}),
+    };
+
+    const [customers, total] = await Promise.all([
+      prisma.user.findMany({
+        where,
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          email: true,
+          phone: true,
+          createdAt: true,
+          _count: {
+            select: {
+              orders: true,
+            },
+          },
+        },
+        orderBy: {
+          createdAt: "desc",
+        },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      prisma.user.count({ where }),
+    ]);
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        customers: customers.map((customer) => ({
+          id: customer.id,
+          firstName: customer.firstName,
+          lastName: customer.lastName,
+          email: customer.email,
+          phone: customer.phone,
+          createdAt: customer.createdAt,
+          totalOrders: customer._count.orders,
+        })),
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages: Math.max(1, Math.ceil(total / limit)),
+        },
+      },
+    });
+  } catch (error) {
+    console.error("ADMIN CUSTOMERS ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to load customers",
+    });
+  }
+}

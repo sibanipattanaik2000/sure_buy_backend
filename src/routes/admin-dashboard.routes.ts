@@ -7,6 +7,7 @@ import {
   getAdminPayments,
   searchAdminRecords,
   updateOrderItemImei,
+  getAdminCustomers,
 } from "../controllers/admin-dashboard.controller";
 
 const router = Router();
@@ -17,10 +18,7 @@ router.use(requireAdmin);
 router.get("/analytics", getAdminAnalytics);
 router.get("/payments", getAdminPayments);
 router.get("/lookup", searchAdminRecords);
-
-router.patch(
-  "/orders/:orderId/items/:itemId/imei",
-  updateOrderItemImei,
-);
+router.get("/customers", getAdminCustomers);
+router.patch("/orders/:orderId/items/:itemId/imei", updateOrderItemImei);
 
 export default router;
