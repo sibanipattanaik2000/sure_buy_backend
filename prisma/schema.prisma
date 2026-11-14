@@ -359,6 +359,7 @@ model OrderItem {
   order         Order            @relation(fields: [orderId], references: [id], onDelete: Cascade)
   product       Product          @relation(fields: [productId], references: [id])
   variant       ProductVariant?  @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  imei          String?          @unique
 
   @@index([orderId])
   @@index([productId])
@@ -464,6 +465,21 @@ model NewsletterSubscriber {
 
   @@index([isActive])
   @@index([subscribedAt])
+}
+
+model PageVisit {
+  id              String   @id @default(cuid())
+  visitId         String   @unique
+  sessionId       String
+  path            String
+  durationSeconds Int      @default(0)
+  startedAt       DateTime @default(now())
+  lastSeenAt      DateTime @default(now())
+  createdAt       DateTime @default(now())
+
+  @@index([sessionId, createdAt])
+  @@index([path, createdAt])
+  @@index([createdAt])
 }
 
 enum ProductCondition {

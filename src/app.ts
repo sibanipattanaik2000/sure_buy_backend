@@ -21,6 +21,8 @@ import adminOrderRoutes from "./routes/admin-order.routes";
 import { env } from "./config/env";
 import { notFoundHandler, errorHandler } from "./middleware/error.middleware";
 import deliveryRoutes from "./routes/delivery.routes";
+import analyticsRoutes from "./routes/analytics.routes";
+import adminDashboardRoutes from "./routes/admin-dashboard.routes";
 const app = express();
 
 app.use(helmet());
@@ -124,6 +126,8 @@ app.use("/api/v1/sell/payments", sellPaymentRoutes);
 app.use("/api/v1/newsletter", newsletterRoutes);
 app.use("/api/v1/openai-feed.jsonl", openAIFeedRoutes);
 app.use("/api/v1/delivery", deliveryRoutes);
+app.use("/api/v1/analytics", analyticsRoutes);
+app.use("/api/v1/admin", adminDashboardRoutes);
 /**
  * 404 + global error handling
  */
