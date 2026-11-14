@@ -400,7 +400,7 @@ export async function createOrder(userId: string, input: CreateOrderInput) {
        * =====================================================
        */
 
-      for (const item of cart.items) {
+      for (const item of orderCartItems) {
         if (!item.product.active) {
           throw new Error("PRODUCT_UNAVAILABLE");
         }
@@ -446,7 +446,7 @@ export async function createOrder(userId: string, input: CreateOrderInput) {
 
       let subtotal = 0;
 
-      const orderItems = cart.items.map((item) => {
+      const orderItems = orderCartItems.map((item) => {
         const unitPrice = decimalToNumber(
           item.variant?.price ?? item.product.price,
         );
