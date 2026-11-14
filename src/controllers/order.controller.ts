@@ -48,6 +48,7 @@ function handleOrderError(error: unknown, res: Response, operation: string) {
     // Payment / refund safety
     PAYMENT_RECORD_NOT_FOUND: 409,
     RAZORPAY_PAYMENT_ID_NOT_FOUND: 409,
+    CHECKOUT_ITEM_NOT_FOUND: 409,
   };
 
   const status = statusByError[message] ?? 500;

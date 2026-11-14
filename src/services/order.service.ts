@@ -368,7 +368,26 @@ export async function createOrder(userId: string, input: CreateOrderInput) {
       if (!cart || cart.items.length === 0) {
         throw new Error("CART_EMPTY");
       }
+      // Use only the products explicitly selected for this checkout.
+      // Older frontend versions without `items` retain the old cart behavior.
+      const orderCartItems = input.items
+        ? input.items.map((requestedItem) => {
+            const matchingItem = cart.items.find(
+              (item) =>
+                item.productId === requestedItem.productId &&
+                (item.variantId ?? null) === (requestedItem.variantId ?? null),
+            );
 
+            if (!matchingItem) {
+              throw new Error("CHECKOUT_ITEM_NOT_FOUND");
+            }
+
+            return {
+              ...matchingItem,
+              quantity: requestedItem.quantity,
+            };
+          })
+        : cart.items;
       /*
        * =====================================================
        * 3. Validate cart
