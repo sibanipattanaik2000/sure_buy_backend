@@ -106,17 +106,47 @@ export async function getAdminOrdersController(
     const search =
       typeof req.query.search === "string" ? req.query.search.trim() : "";
 
+    const filterMode =
+      typeof req.query.filterMode === "string"
+        ? req.query.filterMode
+        : undefined;
+
+    const statusFilter =
+      typeof req.query.statusFilter === "string"
+        ? req.query.statusFilter
+        : "ALL";
+
+    const allowedFilters: Record<string, string[]> = {
+      shiprocket: ["CREATED", "NOT_CREATED", "AWB_ASSIGNED"],
+      tracking: ["TRACKED", "NOT_TRACKED"],
+      delivery: [
+        "PENDING",
+        "CONFIRMED",
+        "PROCESSING",
+        "SHIPPED",
+        "OUT_FOR_DELIVERY",
+        "DELIVERED",
+        "CANCELLED",
+      ],
+    };
+
+    const validFilter =
+      statusFilter === "ALL" ||
+      (filterMode !== undefined &&
+        allowedFilters[filterMode]?.includes(statusFilter));
+
     if (
       !Number.isInteger(page) ||
       page < 1 ||
       !Number.isInteger(limit) ||
       limit < 1 ||
       limit > 50 ||
-      search.length > 100
+      search.length > 100 ||
+      !validFilter
     ) {
       return res.status(400).json({
         success: false,
-        message: "Invalid pagination or search parameters",
+        message: "Invalid pagination, search or status filter parameters",
       });
     }
 
@@ -124,6 +154,12 @@ export async function getAdminOrdersController(
       page,
       limit,
       search,
+      filterMode: filterMode as
+        | "shiprocket"
+        | "tracking"
+        | "delivery"
+        | undefined,
+      statusFilter,
     });
 
     return res.status(200).json({

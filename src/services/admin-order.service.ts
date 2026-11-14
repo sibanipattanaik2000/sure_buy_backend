@@ -549,60 +549,92 @@ export async function retryFailedRazorpayRefund(input: {
     throw new Error("INVALID_IDEMPOTENCY_KEY");
   }
 
-  const refund = await prisma.paymentRefund.findUnique({
-    where: { id: input.refundId },
-    include: {
-      payment: {
-        include: {
-          refunds: true,
+  // Atomically reserve this failed refund before contacting Razorpay.
+  // Locking the order serializes simultaneous retry requests.
+  const reservation = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT "id"
+      FROM "Order"
+      WHERE "id" = ${input.orderId}
+      FOR UPDATE
+    `;
+
+    const refund = await tx.paymentRefund.findUnique({
+      where: { id: input.refundId },
+      include: {
+        payment: {
+          include: {
+            refunds: true,
+          },
         },
       },
-    },
+    });
+
+    if (!refund || refund.payment.orderId !== input.orderId) {
+      throw new Error("REFUND_NOT_FOUND");
+    }
+
+    if (
+      refund.payment.provider !== "RAZORPAY" ||
+      !refund.payment.providerPaymentId
+    ) {
+      throw new Error("RAZORPAY_REFUND_ONLY");
+    }
+
+    // A second admin request will see RETRYING, not FAILED.
+    if (refund.status !== "FAILED") {
+      throw new Error("REFUND_MUST_BE_CONFIRMED_FAILED");
+    }
+
+    const anotherPendingRefund = refund.payment.refunds.some(
+      (item) =>
+        item.id !== refund.id &&
+        (item.status === "REQUESTED" ||
+          item.status === "MANUAL_PENDING" ||
+          item.status === "RETRYING"),
+    );
+
+    if (anotherPendingRefund) {
+      throw new Error("ANOTHER_REFUND_IS_PENDING");
+    }
+
+    // Reserve the original ledger row before releasing the lock.
+    await tx.paymentRefund.update({
+      where: { id: refund.id },
+      data: { status: "RETRYING" },
+    });
+
+    // Restore the payment to a refundable state.
+    await tx.payment.update({
+      where: { id: refund.paymentId },
+      data: {
+        status: refund.payment.refunds.some(
+          (item) => item.status === "PROCESSED",
+        )
+          ? PaymentStatus.PARTIALLY_REFUNDED
+          : PaymentStatus.PAID,
+        refundId: null,
+      },
+    });
+
+    return {
+      paymentId: refund.paymentId,
+      providerPaymentId: refund.payment.providerPaymentId,
+      amount: Number(refund.amount),
+      reason: refund.reason ?? "Admin-approved refund retry",
+      originalRefundId: refund.id,
+    };
   });
 
-  if (!refund || refund.payment.orderId !== input.orderId) {
-    throw new Error("REFUND_NOT_FOUND");
-  }
-
-  if (
-    refund.payment.provider !== "RAZORPAY" ||
-    !refund.payment.providerPaymentId
-  ) {
-    throw new Error("RAZORPAY_REFUND_ONLY");
-  }
-
-  if (refund.status !== "FAILED") {
-    throw new Error("REFUND_MUST_BE_CONFIRMED_FAILED");
-  }
-
-  const anotherPendingRefund = refund.payment.refunds.some(
-    (item) =>
-      item.id !== refund.id &&
-      (item.status === "REQUESTED" || item.status === "MANUAL_PENDING"),
-  );
-
-  if (anotherPendingRefund) {
-    throw new Error("ANOTHER_REFUND_IS_PENDING");
-  }
-
-  // Restore the payment to its refundable state before making
-  // a new request. The failed ledger row remains as an audit record.
-  await prisma.payment.update({
-    where: { id: refund.paymentId },
-    data: {
-      status: refund.payment.refunds.some((item) => item.status === "PROCESSED")
-        ? PaymentStatus.PARTIALLY_REFUNDED
-        : PaymentStatus.PAID,
-      refundId: null,
-    },
-  });
-
+  // The original refund is now reserved as RETRYING.
+  // initiateRazorpayRefund creates a separate REQUESTED ledger row
+  // for this new attempt before making the external Razorpay request.
   const result = await initiateRazorpayRefund(
-    refund.paymentId,
-    refund.payment.providerPaymentId,
-    Number(refund.amount),
-    refund.reason ?? "Admin-approved refund retry",
-    `admin-retry-${refund.id}-${input.idempotencyKey}`,
+    reservation.paymentId,
+    reservation.providerPaymentId,
+    reservation.amount,
+    reservation.reason,
+    `admin-retry-${reservation.originalRefundId}-${input.idempotencyKey}`,
   );
 
   return {
@@ -653,48 +685,72 @@ export async function getAdminOrders(input: {
   page: number;
   limit: number;
   search: string;
+  filterMode?: "shiprocket" | "tracking" | "delivery";
+  statusFilter?: string;
 }) {
   const page = Math.max(1, Math.floor(input.page || 1));
   const limit = Math.min(50, Math.max(1, Math.floor(input.limit || 20)));
   const search = input.search.trim();
 
-  const where: Prisma.OrderWhereInput = search
-    ? {
-        OR: [
-          {
-            orderNumber: {
-              contains: search,
-              mode: "insensitive",
-            },
+  const where: Prisma.OrderWhereInput = {};
+
+  if (search) {
+    where.OR = [
+      {
+        orderNumber: {
+          contains: search,
+          mode: "insensitive",
+        },
+      },
+      {
+        shippingFullName: {
+          contains: search,
+          mode: "insensitive",
+        },
+      },
+      {
+        shippingPhone: {
+          contains: search,
+        },
+      },
+      {
+        shippingCity: {
+          contains: search,
+          mode: "insensitive",
+        },
+      },
+      {
+        user: {
+          email: {
+            contains: search,
+            mode: "insensitive",
           },
-          {
-            shippingFullName: {
-              contains: search,
-              mode: "insensitive",
-            },
-          },
-          {
-            shippingPhone: {
-              contains: search,
-            },
-          },
-          {
-            shippingCity: {
-              contains: search,
-              mode: "insensitive",
-            },
-          },
-          {
-            user: {
-              email: {
-                contains: search,
-                mode: "insensitive",
-              },
-            },
-          },
-        ],
+        },
+      },
+    ];
+  }
+
+  const filter = input.statusFilter;
+
+  if (filter && filter !== "ALL") {
+    if (input.filterMode === "delivery") {
+      where.status = filter as Prisma.OrderWhereInput["status"];
+    } else if (input.filterMode === "tracking") {
+      if (filter === "TRACKED") {
+        where.shiprocketAwbCode = { not: null };
+      } else if (filter === "NOT_TRACKED") {
+        where.shiprocketAwbCode = null;
       }
-    : {};
+    } else if (input.filterMode === "shiprocket") {
+      if (filter === "CREATED") {
+        where.shiprocketShipmentId = { not: null };
+      } else if (filter === "NOT_CREATED") {
+        where.shiprocketShipmentId = null;
+      } else if (filter === "AWB_ASSIGNED") {
+        where.shiprocketAwbCode = { not: null };
+      }
+    }
+  }
 
   const [orders, total] = await prisma.$transaction([
     prisma.order.findMany({
