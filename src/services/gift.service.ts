@@ -1,7 +1,12 @@
+
 import crypto from "crypto";
 import { prisma } from "../config/prisma";
 
-const ALLOWED_GIFTS = ["Smartwatch", "Wireless Earbuds", "Neckband"] as const;
+const ALLOWED_GIFTS = [
+  "Smartwatch",
+  "Wireless Earbuds",
+  "Neckband",
+] as const;
 
 export async function startGiftOffer(
   userId: string | null,
@@ -9,8 +14,13 @@ export async function startGiftOffer(
   productId: number,
 ) {
   const product = await prisma.product.findFirst({
-    where: { id: productId, active: true },
-    select: { id: true },
+    where: {
+      id: productId,
+      active: true,
+    },
+    select: {
+      id: true,
+    },
   });
 
   if (!product) {
@@ -18,13 +28,17 @@ export async function startGiftOffer(
   }
 
   return prisma.$transaction(async (tx) => {
-    // Serialize requests for the same visitor/product to avoid
-    // creating multiple active timers from simultaneous requests.
-    const lockKey = `${userId ?? visitorId}:${productId}`;
+    // Lock requests for the same visitor and product.
+    const lockKey = `${visitorId}:${productId}`;
 
+    // pg_advisory_xact_lock returns PostgreSQL VOID.
+    // Return an integer instead so Prisma can deserialize the result.
     await tx.$queryRaw`
-  SELECT pg_advisory_xact_lock(hashtext(${`${visitorId}:${productId}`}))
-`;
+      SELECT 1::int AS locked
+      FROM (
+        SELECT pg_advisory_xact_lock(hashtext(${lockKey}))
+      ) AS advisory_lock
+    `;
 
     const now = new Date();
 
@@ -32,14 +46,20 @@ export async function startGiftOffer(
       where: {
         productId,
         consumedAt: null,
-        expiresAt: { gt: now },
+        expiresAt: {
+          gt: now,
+        },
         ...(userId
           ? {
               OR: [{ userId }, { visitorId }],
             }
-          : { visitorId }),
+          : {
+              visitorId,
+            }),
       },
-      orderBy: { createdAt: "desc" },
+      orderBy: {
+        createdAt: "desc",
+      },
       select: {
         id: true,
         expiresAt: true,
@@ -47,12 +67,16 @@ export async function startGiftOffer(
     });
 
     if (existing) {
-      // Attach the anonymous offer to the account when the visitor
-      // has logged in, without resetting its expiry.
+      // Attach the existing anonymous offer to the account
+      // without resetting its expiry time.
       if (userId) {
         await tx.giftOffer.update({
-          where: { id: existing.id },
-          data: { userId },
+          where: {
+            id: existing.id,
+          },
+          data: {
+            userId,
+          },
         });
       }
 
@@ -76,8 +100,12 @@ export async function startGiftOffer(
 
 export async function getMyGiftCards(userId: string) {
   return prisma.giftCard.findMany({
-    where: { userId },
-    orderBy: { createdAt: "desc" },
+    where: {
+      userId,
+    },
+    orderBy: {
+      createdAt: "desc",
+    },
     select: {
       id: true,
       code: true,
@@ -95,7 +123,11 @@ export async function claimGift(
   code: string,
   giftName: string,
 ) {
-  if (!ALLOWED_GIFTS.includes(giftName as (typeof ALLOWED_GIFTS)[number])) {
+  if (
+    !ALLOWED_GIFTS.includes(
+      giftName as (typeof ALLOWED_GIFTS)[number],
+    )
+  ) {
     throw new Error("INVALID_GIFT_SELECTION");
   }
 
@@ -130,7 +162,9 @@ export async function claimGift(
     }
 
     return tx.giftCard.findUniqueOrThrow({
-      where: { id: card.id },
+      where: {
+        id: card.id,
+      },
       select: {
         code: true,
         giftName: true,
@@ -143,7 +177,9 @@ export async function claimGift(
 
 export async function listAdminGiftCards() {
   return prisma.giftCard.findMany({
-    orderBy: { createdAt: "desc" },
+    orderBy: {
+      createdAt: "desc",
+    },
   });
 }
 
@@ -153,7 +189,9 @@ export async function updateAdminGiftCard(
   adminNote?: string,
 ) {
   const card = await prisma.giftCard.findUnique({
-    where: { id },
+    where: {
+      id,
+    },
   });
 
   if (!card) {
@@ -172,18 +210,24 @@ export async function updateAdminGiftCard(
   }
 
   return prisma.giftCard.update({
-    where: { id },
+    where: {
+      id,
+    },
     data: {
       status,
       ...(adminNote !== undefined ? { adminNote } : {}),
-      ...(status === "FULFILLED" ? { fulfilledAt: new Date() } : {}),
+      ...(status === "FULFILLED"
+        ? { fulfilledAt: new Date() }
+        : {}),
     },
   });
 }
 
 export async function issueGiftCardForPaidOrder(orderId: string) {
   const order = await prisma.order.findUnique({
-    where: { id: orderId },
+    where: {
+      id: orderId,
+    },
     select: {
       id: true,
       userId: true,
@@ -196,10 +240,15 @@ export async function issueGiftCardForPaidOrder(orderId: string) {
     return null;
   }
 
-  const code = `PB-GIFT-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
+  const code = `PB-GIFT-${crypto
+    .randomBytes(4)
+    .toString("hex")
+    .toUpperCase()}`;
 
   return prisma.giftCard.upsert({
-    where: { orderId },
+    where: {
+      orderId,
+    },
     create: {
       code,
       userId: order.userId,
