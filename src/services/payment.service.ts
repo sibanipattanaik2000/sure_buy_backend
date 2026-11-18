@@ -10,6 +10,7 @@ import {
 import { prisma } from "../config/prisma";
 import { razorpay } from "../config/razorpay";
 import { env } from "../config/env";
+import { issueGiftCardForPaidOrder } from "./gift.service";
 
 const RAZORPAY_PROVIDER = "RAZORPAY";
 const COD_ADVANCE_AMOUNT = 500;
@@ -65,10 +66,7 @@ function calculateNetCollected(
     ) {
       refunded = Number(payment.refundAmount ?? 0);
 
-      if (
-        payment.status === PaymentStatus.REFUNDED &&
-        refunded === 0
-      ) {
+      if (payment.status === PaymentStatus.REFUNDED && refunded === 0) {
         refunded = amount;
       }
     }
@@ -301,7 +299,6 @@ async function deductStockAfterSuccessfulPayment(
   // Stock was deducted successfully for the first time.
   return true;
 }
-
 
 /**
  * ============================================================
@@ -869,8 +866,10 @@ export async function processCapturedPayment(
       let stockWasDeducted = false;
 
       try {
-        stockWasDeducted =
-          await deductStockAfterSuccessfulPayment(tx, payment.orderId);
+        stockWasDeducted = await deductStockAfterSuccessfulPayment(
+          tx,
+          payment.orderId,
+        );
       } catch (error) {
         const refundableStockErrors = new Set([
           "INSUFFICIENT_STOCK_AFTER_PAYMENT",
@@ -884,8 +883,7 @@ export async function processCapturedPayment(
           error instanceof Error &&
           refundableStockErrors.has(error.message)
         ) {
-          const reason =
-            `Payment captured but order could not be fulfilled: ${error.message}`;
+          const reason = `Payment captured but order could not be fulfilled: ${error.message}`;
 
           refundRequired = {
             paymentId: payment.id,
@@ -1016,6 +1014,14 @@ export async function processCapturedPayment(
       };
     }
   }
+  if (!refundRequired && result.success && result.orderId) {
+    try {
+      await issueGiftCardForPaidOrder(result.orderId);
+    } catch (giftError) {
+      // Do not turn a successful payment into a failed payment.
+      console.error("GIFT_CARD_ISSUE_FAILED:", giftError);
+    }
+  }
 
   return result;
 }
@@ -1027,10 +1033,7 @@ export async function processCapturedPayment(
  *
  * NEVER changes inventory.
  */
-export async function createRazorpayOrder(
-  userId: string,
-  orderId: string,
-) {
+export async function createRazorpayOrder(userId: string, orderId: string) {
   const order = await prisma.order.findFirst({
     where: {
       id: orderId,
@@ -1072,9 +1075,7 @@ export async function createRazorpayOrder(
   });
 
   if (
-    payments.some(
-      (payment) => payment.status === PaymentStatus.REFUND_PENDING,
-    )
+    payments.some((payment) => payment.status === PaymentStatus.REFUND_PENDING)
   ) {
     throw new Error("ORDER_REFUND_PENDING");
   }
@@ -1129,9 +1130,7 @@ export async function createRazorpayOrder(
       amountInPaise: toPaise(amount),
       currency: existingPayment.currency,
       keyId: env.RAZORPAY_KEY_ID,
-      paymentPurpose: isFirstCodPayment
-        ? "COD_ADVANCE"
-        : "BALANCE_PAYMENT",
+      paymentPurpose: isFirstCodPayment ? "COD_ADVANCE" : "BALANCE_PAYMENT",
       paidAmount,
       remainingAmount,
     };
@@ -1162,9 +1161,7 @@ export async function createRazorpayOrder(
         orderNumber: order.orderNumber,
         userId,
         paymentMethod: order.paymentMethod,
-        paymentPurpose: isFirstCodPayment
-          ? "COD_ADVANCE"
-          : "BALANCE_PAYMENT",
+        paymentPurpose: isFirstCodPayment ? "COD_ADVANCE" : "BALANCE_PAYMENT",
       },
     });
   } catch (error) {
@@ -1192,9 +1189,7 @@ export async function createRazorpayOrder(
     amountInPaise: razorpayOrder.amount,
     currency: razorpayOrder.currency,
     keyId: env.RAZORPAY_KEY_ID,
-    paymentPurpose: isFirstCodPayment
-      ? "COD_ADVANCE"
-      : "BALANCE_PAYMENT",
+    paymentPurpose: isFirstCodPayment ? "COD_ADVANCE" : "BALANCE_PAYMENT",
     paidAmount,
     remainingAmount,
   };

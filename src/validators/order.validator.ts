@@ -11,6 +11,7 @@ export const createOrderSchema = z.object({
     .toUpperCase()
     .max(40, "Invalid coupon code")
     .optional(),
+  giftOfferId: z.string().cuid().optional(),
   items: z
     .array(
       z.object({

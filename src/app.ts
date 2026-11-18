@@ -23,6 +23,8 @@ import { notFoundHandler, errorHandler } from "./middleware/error.middleware";
 import deliveryRoutes from "./routes/delivery.routes";
 import analyticsRoutes from "./routes/analytics.routes";
 import adminDashboardRoutes from "./routes/admin-dashboard.routes";
+import giftRoutes from "./routes/gift.routes";
+import adminGiftRoutes from "./routes/admin-gift.routes";
 const app = express();
 
 app.use(helmet());
@@ -128,6 +130,8 @@ app.use("/api/v1/openai-feed.jsonl", openAIFeedRoutes);
 app.use("/api/v1/delivery", deliveryRoutes);
 app.use("/api/v1/analytics", analyticsRoutes);
 app.use("/api/v1/admin", adminDashboardRoutes);
+app.use("/api/v1/admin/gifts", adminGiftRoutes);
+app.use("/api/v1/gifts", giftRoutes);
 /**
  * 404 + global error handling
  */

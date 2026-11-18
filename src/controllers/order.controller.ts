@@ -49,6 +49,7 @@ function handleOrderError(error: unknown, res: Response, operation: string) {
     PAYMENT_RECORD_NOT_FOUND: 409,
     RAZORPAY_PAYMENT_ID_NOT_FOUND: 409,
     CHECKOUT_ITEM_NOT_FOUND: 409,
+    GIFT_OFFER_EXPIRED: 409,
   };
 
   const status = statusByError[message] ?? 500;

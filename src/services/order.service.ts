@@ -523,6 +523,45 @@ export async function createOrder(userId: string, input: CreateOrderInput) {
 
       const orderNumber = await createUniqueOrderNumber(tx);
 
+      // Validate the offer on the server. Never trust a frontend boolean.
+      let validGiftOfferId: string | null = null;
+
+      if (input.giftOfferId) {
+        const offer = await tx.giftOffer.findFirst({
+          where: {
+            id: input.giftOfferId,
+            userId,
+            productId: {
+              in: orderCartItems.map((item) => item.productId),
+            },
+            expiresAt: { gt: new Date() },
+            consumedAt: null,
+          },
+        });
+
+        if (!offer) {
+          throw new Error("GIFT_OFFER_EXPIRED");
+        }
+
+        validGiftOfferId = offer.id;
+
+        const consumed = await tx.giftOffer.updateMany({
+          where: {
+            id: offer.id,
+            userId,
+            consumedAt: null,
+            expiresAt: { gt: new Date() },
+          },
+          data: {
+            consumedAt: new Date(),
+          },
+        });
+
+        if (consumed.count !== 1) {
+          throw new Error("GIFT_OFFER_EXPIRED");
+        }
+      }
+
       /*
        * =====================================================
        * 6. CREATE ORDER
@@ -583,6 +622,7 @@ export async function createOrder(userId: string, input: CreateOrderInput) {
           shippingCountry: address.country,
 
           shippingLandmark: address.landmark,
+          giftOfferId: validGiftOfferId,
 
           items: {
             create: orderItems.map((item) => ({
@@ -872,6 +912,16 @@ export async function cancelOrder(userId: string, orderId: string) {
           }
         }
       }
+      await tx.giftCard.updateMany({
+        where: {
+          orderId: order.id,
+          status: "AVAILABLE",
+        },
+        data: {
+          status: "CANCELLED",
+          adminNote: "Order cancelled before gift claim",
+        },
+      });
 
       let nextPaymentStatus = order.paymentStatus;
 

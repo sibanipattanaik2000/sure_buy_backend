@@ -331,12 +331,44 @@ model Order {
   shiprocketPickupScheduledAt DateTime?
   shiprocketShippedAt         DateTime?
   shiprocketDeliveredAt       DateTime?
+  giftOfferId                 String?       @unique
 
   @@index([userId])
   @@index([status])
   @@index([paymentStatus])
   @@index([createdAt])
   @@index([shiprocketStatus])
+}
+
+model GiftOffer {
+  id         String    @id @default(cuid())
+  userId     String?
+  visitorId  String?
+  productId  Int
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId, expiresAt])
+  @@index([visitorId, productId, expiresAt])
+  @@index([productId])
+}
+
+model GiftCard {
+  id          String    @id @default(cuid())
+  code        String    @unique
+  userId      String
+  orderId     String    @unique
+  giftName    String?
+  status      String    @default("AVAILABLE")
+  claimedAt   DateTime?
+  fulfilledAt DateTime?
+  adminNote   String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([userId, status])
+  @@index([status, createdAt])
 }
 
 model OrderItem {
