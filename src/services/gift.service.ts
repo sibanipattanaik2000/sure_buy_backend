@@ -1,12 +1,7 @@
-
 import crypto from "crypto";
 import { prisma } from "../config/prisma";
 
-const ALLOWED_GIFTS = [
-  "Smartwatch",
-  "Wireless Earbuds",
-  "Neckband",
-] as const;
+const ALLOWED_GIFTS = ["Smartwatch", "Wireless Earbuds", "Neckband"] as const;
 
 export async function startGiftOffer(
   userId: string | null,
@@ -31,13 +26,14 @@ export async function startGiftOffer(
     // Lock requests for the same visitor and product.
     const lockKey = `${visitorId}:${productId}`;
 
-    // pg_advisory_xact_lock returns PostgreSQL VOID.
-    // Return an integer instead so Prisma can deserialize the result.
-    await tx.$queryRaw`
-      SELECT 1::int AS locked
-      FROM (
+    // Materialize the advisory lock operation, but return only an integer
+    // to Prisma. The PostgreSQL VOID result is never exposed.
+    await tx.$queryRaw<Array<{ locked: number }>>`
+      WITH lock AS MATERIALIZED (
         SELECT pg_advisory_xact_lock(hashtext(${lockKey}))
-      ) AS advisory_lock
+      )
+      SELECT 1::int AS locked
+      FROM lock
     `;
 
     const now = new Date();
@@ -123,11 +119,7 @@ export async function claimGift(
   code: string,
   giftName: string,
 ) {
-  if (
-    !ALLOWED_GIFTS.includes(
-      giftName as (typeof ALLOWED_GIFTS)[number],
-    )
-  ) {
+  if (!ALLOWED_GIFTS.includes(giftName as (typeof ALLOWED_GIFTS)[number])) {
     throw new Error("INVALID_GIFT_SELECTION");
   }
 
@@ -216,9 +208,7 @@ export async function updateAdminGiftCard(
     data: {
       status,
       ...(adminNote !== undefined ? { adminNote } : {}),
-      ...(status === "FULFILLED"
-        ? { fulfilledAt: new Date() }
-        : {}),
+      ...(status === "FULFILLED" ? { fulfilledAt: new Date() } : {}),
     },
   });
 }
@@ -240,10 +230,7 @@ export async function issueGiftCardForPaidOrder(orderId: string) {
     return null;
   }
 
-  const code = `PB-GIFT-${crypto
-    .randomBytes(4)
-    .toString("hex")
-    .toUpperCase()}`;
+  const code = `PB-GIFT-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
 
   return prisma.giftCard.upsert({
     where: {
