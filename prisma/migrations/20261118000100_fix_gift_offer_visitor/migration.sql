@@ -1,13 +1,13 @@
 
--- Allow gift offers to exist before a visitor logs in.
+-- Allow anonymous gift offers.
 ALTER TABLE "GiftOffer"
   ALTER COLUMN "userId" DROP NOT NULL;
 
--- Store the persistent anonymous visitor identity.
+-- Add persistent visitor identity.
 ALTER TABLE "GiftOffer"
   ADD COLUMN IF NOT EXISTS "visitorId" TEXT;
 
--- Support finding active offers by visitor and product.
+-- Add the index required by the Prisma schema.
 CREATE INDEX IF NOT EXISTS
   "GiftOffer_visitorId_productId_expiresAt_idx"
 ON "GiftOffer"("visitorId", "productId", "expiresAt");
