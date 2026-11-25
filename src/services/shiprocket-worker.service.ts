@@ -2,7 +2,7 @@ import { prisma } from "../config/prisma";
 import { processAutomaticShiprocketShipment } from "./auto-shiprocket.service";
 
 const MAX_ATTEMPTS = 8;
-const MAX_JOBS_PER_RUN = 5;
+const MAX_JOBS_PER_RUN = 1;
 
 const UNCERTAIN_STATUSES = new Set([
   "CREATING",
@@ -88,10 +88,7 @@ async function markJobSkipped(jobId: string, reason: string) {
   });
 }
 
-async function handleJobFailure(
-  job: ClaimedJob,
-  error: unknown,
-) {
+async function handleJobFailure(job: ClaimedJob, error: unknown) {
   const message =
     error instanceof Error ? error.message : "UNKNOWN_SHIPROCKET_ERROR";
 
@@ -146,14 +143,9 @@ async function handleJobFailure(
   }
 
   // Exponential backoff: 2, 4, 8, 16, 32, 60 minutes...
-  const delayMinutes = Math.min(
-    60,
-    2 ** Math.min(job.attempts, 6),
-  );
+  const delayMinutes = Math.min(60, 2 ** Math.min(job.attempts, 6));
 
-  const nextAttemptAt = new Date(
-    Date.now() + delayMinutes * 60 * 1000,
-  );
+  const nextAttemptAt = new Date(Date.now() + delayMinutes * 60 * 1000);
 
   await prisma.shiprocketJob.update({
     where: { id: job.id },
@@ -178,17 +170,48 @@ export async function processShiprocketJobs() {
   let completed = 0;
   let skipped = 0;
   let failed = 0;
+  let manualReview = 0;
 
   for (let i = 0; i < MAX_JOBS_PER_RUN; i++) {
     const job = await claimNextJob();
 
-    if (!job) {
-      break;
-    }
+    if (!job) break;
 
     processed++;
 
     try {
+      const order = await prisma.order.findUnique({
+        where: { id: job.orderId },
+        select: {
+          shiprocketStatus: true,
+        },
+      });
+
+      if (!order) {
+        await markJobSkipped(job.id, "ORDER_NOT_FOUND");
+        skipped++;
+        continue;
+      }
+
+      const currentStatus = order.shiprocketStatus;
+
+      if (
+        currentStatus &&
+        UNCERTAIN_STATUSES.has(currentStatus)
+      ) {
+        await prisma.shiprocketJob.update({
+          where: { id: job.id },
+          data: {
+            status: "MANUAL_REVIEW",
+            lockedAt: null,
+            lastError: `UNCERTAIN_SHIPROCKET_STATUS:${currentStatus}`,
+          },
+        });
+
+        manualReview++;
+        continue;
+      }
+
       const result = await processAutomaticShiprocketShipment(
         job.orderId,
       );
@@ -196,12 +219,18 @@ export async function processShiprocketJobs() {
       if (result.success) {
         await markJobCompleted(job.id);
         completed++;
-      } else {
-        await markJobSkipped(
-          job.id,
-          result.reason ?? "SHIPMENT_SKIPPED",
-        );
+      } else if (
+        result.reason === "ORDER_CANCELLED" ||
+        result.reason === "ORDER_HAS_REFUND_ACTIVITY"
+      ) {
+        await markJobSkipped(job.id, result.reason);
         skipped++;
+      } else {
+        await handleJobFailure(
+          job,
+          new Error(result.reason ?? "SHIPMENT_NOT_READY"),
+        );
+        failed++;
       }
     } catch (error) {
       failed++;
@@ -214,5 +243,6 @@ export async function processShiprocketJobs() {
     completed,
     skipped,
     failed,
+    manualReview,
   };
 }

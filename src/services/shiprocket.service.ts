@@ -1,8 +1,6 @@
-
 import { env } from "../config/env";
 
-const SHIPROCKET_BASE_URL =
-  "https://apiv2.shiprocket.in/v1/external";
+const SHIPROCKET_BASE_URL = "https://apiv2.shiprocket.in/v1/external";
 
 const TOKEN_CACHE_MS = 9 * 24 * 60 * 60 * 1000;
 
@@ -55,22 +53,19 @@ async function parseResponse(response: Response): Promise<unknown> {
 async function login(): Promise<string> {
   const credentials = getCredentials();
 
-  const response = await fetch(
-    `${SHIPROCKET_BASE_URL}/auth/login`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
-      body: JSON.stringify(credentials),
-      signal: AbortSignal.timeout(15000),
+  const response = await fetch(`${SHIPROCKET_BASE_URL}/auth/login`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
     },
-  );
+    body: JSON.stringify(credentials),
+    signal: AbortSignal.timeout(15000),
+  });
 
-  const data = (await parseResponse(response)) as
-    | ShiprocketLoginResponse
-    | null;
+  const data = (await parseResponse(
+    response,
+  )) as ShiprocketLoginResponse | null;
 
   if (!response.ok || !data?.token) {
     throw new ShiprocketApiError(
@@ -89,11 +84,7 @@ async function login(): Promise<string> {
 export async function getShiprocketToken(
   forceRefresh = false,
 ): Promise<string> {
-  if (
-    !forceRefresh &&
-    cachedToken &&
-    Date.now() < tokenExpiresAt
-  ) {
+  if (!forceRefresh && cachedToken && Date.now() < tokenExpiresAt) {
     return cachedToken;
   }
 
@@ -129,14 +120,11 @@ export async function shiprocketRequest<T>(
       headers.set("Content-Type", "application/json");
     }
 
-    const response = await fetch(
-      `${SHIPROCKET_BASE_URL}${path}`,
-      {
-        ...options,
-        headers,
-        signal: options.signal ?? AbortSignal.timeout(20000),
-      },
-    );
+    const response = await fetch(`${SHIPROCKET_BASE_URL}${path}`, {
+      ...options,
+      headers,
+      signal: options.signal ?? AbortSignal.timeout(20000),
+    });
 
     const data = await parseResponse(response);
 
@@ -284,18 +272,35 @@ export async function assignShiprocketAwb(
     throw new Error("INVALID_SHIPROCKET_SHIPMENT_ID");
   }
 
-  return shiprocketRequest<ShiprocketAwbResponse>(
-    "/courier/assign/awb",
-    {
-      method: "POST",
-      body: JSON.stringify({
-        shipment_id: shipmentId,
-        ...(courierId ? { courier_id: courierId } : {}),
-      }),
-    },
-  );
+  return shiprocketRequest<ShiprocketAwbResponse>("/courier/assign/awb", {
+    method: "POST",
+    body: JSON.stringify({
+      shipment_id: shipmentId,
+      ...(courierId ? { courier_id: courierId } : {}),
+    }),
+  });
 }
+export type ShiprocketLabelResponse = {
+  label_created?: number;
+  label_url?: string;
+  response?: unknown;
+  [key: string]: unknown;
+};
 
+export async function generateShiprocketLabel(
+  shipmentId: number,
+): Promise<ShiprocketLabelResponse> {
+  if (!Number.isInteger(shipmentId) || shipmentId <= 0) {
+    throw new Error("INVALID_SHIPROCKET_SHIPMENT_ID");
+  }
+
+  return shiprocketRequest<ShiprocketLabelResponse>("/courier/generate/label", {
+    method: "POST",
+    body: JSON.stringify({
+      shipment_id: [shipmentId],
+    }),
+  });
+}
 /**
  * Request pickup after an AWB has been assigned.
  */
@@ -327,15 +332,12 @@ export async function generateShiprocketManifest(
     throw new Error("INVALID_SHIPROCKET_SHIPMENT_ID");
   }
 
-  return shiprocketRequest<ShiprocketManifestResponse>(
-    "/manifests/generate",
-    {
-      method: "POST",
-      body: JSON.stringify({
-        shipment_id: [shipmentId],
-      }),
-    },
-  );
+  return shiprocketRequest<ShiprocketManifestResponse>("/manifests/generate", {
+    method: "POST",
+    body: JSON.stringify({
+      shipment_id: [shipmentId],
+    }),
+  });
 }
 
 /**

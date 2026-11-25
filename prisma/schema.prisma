@@ -331,6 +331,8 @@ model Order {
   shiprocketPickupScheduledAt DateTime?
   shiprocketShippedAt         DateTime?
   shiprocketDeliveredAt       DateTime?
+  shiprocketLabelUrl    String? @db.Text
+  shiprocketManifestUrl String? @db.Text
   giftOfferId                 String?       @unique
   shiprocketJob ShiprocketJob?
   @@index([userId])

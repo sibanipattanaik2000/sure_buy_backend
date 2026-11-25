@@ -142,26 +142,6 @@ export async function verifyPayment(req: AuthRequest, res: Response) {
     //
     // The payment is already captured. Never tell the customer
     // that payment failed because Shiprocket is unavailable.
-
-    if (
-      "shipment" in result &&
-      result.shipment &&
-      !result.shipment.success &&
-      "retryable" in result.shipment &&
-      result.shipment.retryable
-    ) {
-      console.error("SHIPROCKET RETRY REQUIRED:", {
-        orderId: result.orderId,
-        shipment: result.shipment,
-      });
-
-      return res.status(500).json({
-        success: false,
-        paymentCaptured: true,
-        message:
-          "Payment confirmed. Automatic shipment processing will be retried.",
-      });
-    }
     return res.status(200).json({
       success: true,
       message: "Payment verified successfully",

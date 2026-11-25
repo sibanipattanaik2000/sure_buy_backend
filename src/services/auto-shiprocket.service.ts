@@ -1,3 +1,4 @@
+
 import { OrderStatus, PaymentStatus } from "@prisma/client";
 
 import { prisma } from "../config/prisma";
@@ -6,7 +7,25 @@ import {
   createAdminShiprocketShipment,
   assignAdminShiprocketAwb,
   scheduleAdminShiprocketPickup,
+  generateAdminShiprocketManifest,
 } from "./admin-shiprocket.service";
+
+import { generateShiprocketLabel } from "./shiprocket.service";
+
+const shiprocketOrderSelect = {
+  id: true,
+  status: true,
+  paymentStatus: true,
+  shiprocketOrderId: true,
+  shiprocketShipmentId: true,
+  shiprocketAwbCode: true,
+  shiprocketCourierName: true,
+  shiprocketTrackingUrl: true,
+  shiprocketPickupScheduledAt: true,
+  shiprocketStatus: true,
+  shiprocketLabelUrl: true,
+  shiprocketManifestUrl: true,
+} as const;
 
 const REFUND_STATUSES = new Set<PaymentStatus>([
   PaymentStatus.REFUND_PENDING,
@@ -23,20 +42,12 @@ const UNCERTAIN_STATUSES = new Set([
   "PICKUP_REQUEST_UNCERTAIN",
 ]);
 
-export async function processAutomaticShiprocketShipment(orderId: string) {
+export async function processAutomaticShiprocketShipment(
+  orderId: string,
+) {
   let order = await prisma.order.findUnique({
     where: { id: orderId },
-    select: {
-      id: true,
-      status: true,
-      paymentStatus: true,
-      shiprocketOrderId: true,
-      shiprocketShipmentId: true,
-      shiprocketAwbCode: true,
-      shiprocketCourierName: true,
-      shiprocketPickupScheduledAt: true,
-      shiprocketStatus: true,
-    },
+    select: shiprocketOrderSelect,
   });
 
   if (!order) {
@@ -59,6 +70,7 @@ export async function processAutomaticShiprocketShipment(orderId: string) {
     };
   }
 
+  // These conditions are retryable, not permanent skips.
   if (
     order.status !== OrderStatus.CONFIRMED &&
     order.status !== OrderStatus.PROCESSING
@@ -81,13 +93,11 @@ export async function processAutomaticShiprocketShipment(orderId: string) {
     };
   }
 
-  // STEP 1: CREATE SHIPROCKET ORDER
+  // STEP 1: CREATE SHIPROCKET ORDER.
   if (!order.shiprocketShipmentId) {
     try {
       await createAdminShiprocketShipment(orderId);
     } catch (error) {
-      // Another request may have completed the creation
-      // while this request was running.
       const latest = await prisma.order.findUnique({
         where: { id: orderId },
         select: {
@@ -95,79 +105,139 @@ export async function processAutomaticShiprocketShipment(orderId: string) {
         },
       });
 
+      // Do not create another shipment if the first
+      // request may already have succeeded.
       if (!latest?.shiprocketShipmentId) {
         throw error;
       }
     }
   }
 
-  // Refresh the order after shipment creation.
   order = await prisma.order.findUnique({
     where: { id: orderId },
-    select: {
-      id: true,
-      status: true,
-      paymentStatus: true,
-      shiprocketOrderId: true,
-      shiprocketShipmentId: true,
-      shiprocketAwbCode: true,
-      shiprocketCourierName: true,
-      shiprocketPickupScheduledAt: true,
-      shiprocketStatus: true,
-    },
+    select: shiprocketOrderSelect,
   });
 
   if (!order?.shiprocketShipmentId) {
     throw new Error("SHIPROCKET_SHIPMENT_NOT_CREATED");
   }
 
-  // STEP 2: AUTOMATIC AWB ASSIGNMENT
+  const shipmentId = Number(order.shiprocketShipmentId);
+
+  if (!Number.isInteger(shipmentId) || shipmentId <= 0) {
+    throw new Error("INVALID_SHIPROCKET_SHIPMENT_ID");
+  }
+
+  // STEP 2: ASSIGN AWB.
   if (!order.shiprocketAwbCode) {
     await assignAdminShiprocketAwb(orderId);
   }
 
-  // Refresh after AWB assignment.
-  const awbOrder = await prisma.order.findUnique({
+  let latest = await prisma.order.findUnique({
     where: { id: orderId },
-    select: {
-      id: true,
-      shiprocketShipmentId: true,
-      shiprocketAwbCode: true,
-      shiprocketCourierName: true,
-      shiprocketPickupScheduledAt: true,
-      shiprocketStatus: true,
-    },
+    select: shiprocketOrderSelect,
   });
 
-  if (!awbOrder?.shiprocketAwbCode) {
+  if (!latest?.shiprocketAwbCode) {
     throw new Error("SHIPROCKET_AWB_REQUIRED");
   }
 
-  // STEP 3: AUTOMATIC PICKUP SCHEDULING
-  const pickupAlreadyRequested =
-    awbOrder.shiprocketStatus === "PICKUP REQUESTED" ||
-    awbOrder.shiprocketStatus === "PICKUP SCHEDULED";
+  // STEP 3: GENERATE SHIPPING LABEL.
+  if (!latest.shiprocketLabelUrl) {
+    const label = await generateShiprocketLabel(shipmentId);
+    const labelUrl = label.label_url?.trim();
 
-  if (!awbOrder.shiprocketPickupScheduledAt && !pickupAlreadyRequested) {
-    await scheduleAdminShiprocketPickup(orderId);
+    if (!labelUrl || !/^https?:\/\//i.test(labelUrl)) {
+      throw new Error("SHIPROCKET_LABEL_GENERATION_FAILED");
+    }
+
+    await prisma.order.update({
+      where: { id: orderId },
+      data: {
+        shiprocketLabelUrl: labelUrl,
+      },
+    });
   }
-  // STEP 4: RETURN FINAL SHIPMENT DETAILS
-  const completed = await prisma.order.findUnique({
+
+  // STEP 4: REQUEST PICKUP.
+  latest = await prisma.order.findUnique({
     where: { id: orderId },
-    select: {
-      id: true,
-      shiprocketOrderId: true,
-      shiprocketShipmentId: true,
-      shiprocketAwbCode: true,
-      shiprocketCourierName: true,
-      shiprocketTrackingUrl: true,
-      shiprocketPickupScheduledAt: true,
-      shiprocketStatus: true,
-    },
+    select: shiprocketOrderSelect,
   });
 
-  if (!completed) {
+  if (!latest) {
     throw new Error("ORDER_NOT_FOUND");
+  }
+
+  if (!latest.shiprocketAwbCode) {
+    throw new Error("SHIPROCKET_AWB_REQUIRED");
+  }
+
+  const pickupAlreadyRequested =
+    latest.shiprocketStatus === "PICKUP REQUESTED" ||
+    latest.shiprocketStatus === "PICKUP SCHEDULED";
+
+  if (
+    !latest.shiprocketPickupScheduledAt &&
+    !pickupAlreadyRequested
+  ) {
+    await scheduleAdminShiprocketPickup(orderId);
+  }
+
+  // STEP 5: GENERATE MANIFEST AFTER PICKUP.
+  latest = await prisma.order.findUnique({
+    where: { id: orderId },
+    select: shiprocketOrderSelect,
+  });
+
+  if (!latest) {
+    throw new Error("ORDER_NOT_FOUND");
+  }
+
+  const pickupConfirmed =
+    Boolean(latest.shiprocketPickupScheduledAt) ||
+    latest.shiprocketStatus === "PICKUP REQUESTED" ||
+    latest.shiprocketStatus === "PICKUP SCHEDULED";
+
+  if (!pickupConfirmed) {
+    throw new Error("SHIPROCKET_PICKUP_NOT_CONFIRMED");
+  }
+
+  if (!latest.shiprocketManifestUrl) {
+    const manifest = await generateAdminShiprocketManifest(orderId);
+
+    const manifestUrl = manifest.manifest_url?.trim();
+
+    if (
+      !manifestUrl ||
+      !/^https?:\/\//i.test(manifestUrl) ||
+      String(manifest.status) !== "1"
+    ) {
+      throw new Error("SHIPROCKET_MANIFEST_GENERATION_FAILED");
+    }
+
+    await prisma.order.update({
+      where: { id: orderId },
+      data: {
+        shiprocketManifestUrl: manifestUrl,
+      },
+    });
+  }
+
+  // STEP 6: VERIFY FINAL LOCAL RECORD.
+  const completed = await prisma.order.findUnique({
+    where: { id: orderId },
+    select: shiprocketOrderSelect,
+  });
+
+  if (
+    !completed ||
+    !completed.shiprocketShipmentId ||
+    !completed.shiprocketAwbCode ||
+    !completed.shiprocketLabelUrl ||
+    !completed.shiprocketManifestUrl
+  ) {
+    throw new Error("SHIPROCKET_DISPATCH_DETAILS_INCOMPLETE");
   }
 
   return {
@@ -179,10 +249,14 @@ export async function processAutomaticShiprocketShipment(orderId: string) {
     courierName: completed.shiprocketCourierName,
     trackingUrl: completed.shiprocketTrackingUrl,
     pickupScheduledAt: completed.shiprocketPickupScheduledAt,
+    labelUrl: completed.shiprocketLabelUrl,
+    manifestUrl: completed.shiprocketManifestUrl,
     status: completed.shiprocketStatus,
   };
 }
 
-export function isShiprocketOperationUncertain(status: string | null) {
+export function isShiprocketOperationUncertain(
+  status: string | null,
+) {
   return status !== null && UNCERTAIN_STATUSES.has(status);
 }
