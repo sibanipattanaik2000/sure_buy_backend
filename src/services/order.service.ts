@@ -523,10 +523,14 @@ export async function createOrder(userId: string, input: CreateOrderInput) {
 
       const orderNumber = await createUniqueOrderNumber(tx);
 
-      // Validate the offer on the server. Never trust a frontend boolean.
+      // Validate and consume a gift offer atomically.
+      // Gift offers are optional: an expired, invalid, mismatched,
+      // or already-consumed offer must not block a valid order.
       let validGiftOfferId: string | null = null;
 
       if (input.giftOfferId) {
+        const now = new Date();
+
         const offer = await tx.giftOffer.findFirst({
           where: {
             id: input.giftOfferId,
@@ -534,31 +538,37 @@ export async function createOrder(userId: string, input: CreateOrderInput) {
             productId: {
               in: orderCartItems.map((item) => item.productId),
             },
-            expiresAt: { gt: new Date() },
+            expiresAt: {
+              gt: now,
+            },
             consumedAt: null,
+          },
+          select: {
+            id: true,
           },
         });
 
-        if (!offer) {
-          throw new Error("GIFT_OFFER_EXPIRED");
-        }
+        if (offer) {
+          const consumed = await tx.giftOffer.updateMany({
+            where: {
+              id: offer.id,
+              userId,
+              productId: {
+                in: orderCartItems.map((item) => item.productId),
+              },
+              expiresAt: {
+                gt: now,
+              },
+              consumedAt: null,
+            },
+            data: {
+              consumedAt: now,
+            },
+          });
 
-        validGiftOfferId = offer.id;
-
-        const consumed = await tx.giftOffer.updateMany({
-          where: {
-            id: offer.id,
-            userId,
-            consumedAt: null,
-            expiresAt: { gt: new Date() },
-          },
-          data: {
-            consumedAt: new Date(),
-          },
-        });
-
-        if (consumed.count !== 1) {
-          throw new Error("GIFT_OFFER_EXPIRED");
+          if (consumed.count === 1) {
+            validGiftOfferId = offer.id;
+          }
         }
       }
 
