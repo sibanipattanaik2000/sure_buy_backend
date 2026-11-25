@@ -53,6 +53,7 @@ const envSchema = z.object({
   SHIPROCKET_DEFAULT_LENGTH_CM: z.coerce.number().positive().optional(),
   SHIPROCKET_DEFAULT_BREADTH_CM: z.coerce.number().positive().optional(),
   SHIPROCKET_DEFAULT_HEIGHT_CM: z.coerce.number().positive().optional(),
+  SHIPROCKET_WORKER_TOKEN: z.string().min(32).optional(),
   UPSTASH_REDIS_REST_URL: z.string().url().optional(),
   UPSTASH_REDIS_REST_TOKEN: z.string().min(1).optional(),
 });

@@ -332,12 +332,29 @@ model Order {
   shiprocketShippedAt         DateTime?
   shiprocketDeliveredAt       DateTime?
   giftOfferId                 String?       @unique
-
+  shiprocketJob ShiprocketJob?
   @@index([userId])
   @@index([status])
   @@index([paymentStatus])
   @@index([createdAt])
   @@index([shiprocketStatus])
+}
+model ShiprocketJob {
+  id            String   @id @default(cuid())
+  orderId       String   @unique
+  order         Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  status        String   @default("PENDING")
+  attempts      Int      @default(0)
+  nextAttemptAt DateTime @default(now())
+  lockedAt      DateTime?
+  lastError     String?  @db.Text
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([status, nextAttemptAt])
+  @@index([lockedAt])
 }
 
 model GiftOffer {

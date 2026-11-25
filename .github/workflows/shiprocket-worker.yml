@@ -1,0 +1,32 @@
+name: PhoneBhai Shiprocket Worker
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+
+  workflow_dispatch:
+
+concurrency:
+  group: phonebhai-shiprocket-worker
+  cancel-in-progress: false
+
+jobs:
+  process-shiprocket-jobs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Process pending Shiprocket jobs
+        env:
+          WORKER_TOKEN: ${{ secrets.SHIPROCKET_WORKER_TOKEN }}
+        run: |
+          if [ -z "$WORKER_TOKEN" ]; then
+            echo "SHIPROCKET_WORKER_TOKEN secret is missing"
+            exit 1
+          fi
+
+          curl --fail-with-body --silent --show-error \
+            --max-time 90 \
+            --request POST \
+            "https://api.phonebhai.com/api/v1/delivery/worker/process" \
+            --header "x-worker-token: $WORKER_TOKEN" \
+            --header "Content-Type: application/json"

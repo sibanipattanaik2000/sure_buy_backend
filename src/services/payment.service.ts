@@ -11,6 +11,10 @@ import { prisma } from "../config/prisma";
 import { razorpay } from "../config/razorpay";
 import { env } from "../config/env";
 import { issueGiftCardForPaidOrder } from "./gift.service";
+import {
+  processAutomaticShiprocketShipment,
+  isShiprocketOperationUncertain,
+} from "./auto-shiprocket.service";
 
 const RAZORPAY_PROVIDER = "RAZORPAY";
 const COD_ADVANCE_AMOUNT = 500;
@@ -967,6 +971,18 @@ export async function processCapturedPayment(
           payment.orderId,
         );
       }
+            // Create the Shiprocket job atomically with successful payment.
+      // Duplicate payment webhooks cannot create duplicate jobs.
+      await tx.shiprocketJob.upsert({
+        where: {
+          orderId: payment.orderId,
+        },
+        create: {
+          orderId: payment.orderId,
+          status: "PENDING",
+        },
+        update: {},
+      });
 
       return {
         success: true,
@@ -1014,16 +1030,98 @@ export async function processCapturedPayment(
       };
     }
   }
+  // Recovery for orders that were already marked PAID before
+  // the Shiprocket queue was introduced.
   if (!refundRequired && result.success && result.orderId) {
     try {
-      await issueGiftCardForPaidOrder(result.orderId);
-    } catch (giftError) {
-      // Do not turn a successful payment into a failed payment.
-      console.error("GIFT_CARD_ISSUE_FAILED:", giftError);
+      await prisma.shiprocketJob.upsert({
+        where: {
+          orderId: result.orderId,
+        },
+        create: {
+          orderId: result.orderId,
+          status: "PENDING",
+        },
+        update: {},
+      });
+    } catch (error) {
+      // Payment has already succeeded. Never report it as failed
+      // because the background queue could not be updated.
+      console.error("SHIPROCKET JOB ENQUEUE ERROR:", error);
     }
   }
+let shipmentResult:
+  | {
+      success: true;
+      data: Awaited<
+        ReturnType<typeof processAutomaticShiprocketShipment>
+      >;
+    }
+  | {
+      success: false;
+      error: string;
+      retryable: boolean;
+    }
+  | undefined;
 
-  return result;
+if (!refundRequired && result.success && result.orderId) {
+  try {
+    const shipment = await processAutomaticShiprocketShipment(
+      result.orderId,
+    );
+
+let shipmentResult:
+  | {
+      success: boolean;
+      data?: Awaited<
+        ReturnType<typeof processAutomaticShiprocketShipment>
+      >;
+      error?: string;
+      retryable?: boolean;
+    }
+  | undefined;
+  } catch (shipmentError) {
+    const message =
+      shipmentError instanceof Error
+        ? shipmentError.message
+        : "Unknown Shiprocket error";
+
+    const latestOrder = await prisma.order.findUnique({
+      where: { id: result.orderId },
+      select: { shiprocketStatus: true },
+    });
+
+    const retryable = !isShiprocketOperationUncertain(
+      latestOrder?.shiprocketStatus ?? null,
+    );
+
+    shipmentResult = {
+      success: false,
+      error: message,
+      retryable,
+    };
+
+    console.error("AUTOMATIC SHIPROCKET PROCESS FAILED:", {
+      orderId: result.orderId,
+      message,
+      retryable,
+    });
+  }
+}
+
+if (!refundRequired && result.success && result.orderId) {
+  try {
+    await issueGiftCardForPaidOrder(result.orderId);
+  } catch (giftError) {
+    console.error("GIFT_CARD_ISSUE_FAILED:", giftError);
+  }
+}
+
+return {
+  ...result,
+  ...(shipmentResult ? { shipment: shipmentResult } : {}),
+};
+
 }
 
 /**

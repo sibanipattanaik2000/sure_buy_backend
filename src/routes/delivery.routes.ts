@@ -1,15 +1,19 @@
-
 import { Router } from "express";
+
 import {
   checkDeliveryServiceability,
   receiveDeliveryEvent,
+  runShiprocketWorker,
 } from "../controllers/delivery.controller";
 
 const router = Router();
 
 router.get("/serviceability", checkDeliveryServiceability);
 
-// Neutral URL: Shiprocket requires x-api-key webhook authentication.
+// Shiprocket tracking webhook.
 router.post("/events", receiveDeliveryEvent);
+
+// Protected background worker.
+router.post("/worker/process", runShiprocketWorker);
 
 export default router;

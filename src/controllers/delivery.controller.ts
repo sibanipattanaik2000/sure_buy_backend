@@ -5,7 +5,7 @@ import {
   getDeliveryServiceability,
   processShiprocketWebhook,
 } from "../services/delivery.service";
-
+import { processShiprocketJobs } from "../services/shiprocket-worker.service";
 export async function checkDeliveryServiceability(req: Request, res: Response) {
   const pincode = String(req.query.pincode ?? "").trim();
 
@@ -91,6 +91,55 @@ export async function receiveDeliveryEvent(req: Request, res: Response) {
     return res.status(500).json({
       success: false,
       message: "Unable to process delivery update.",
+    });
+  }
+}
+export async function runShiprocketWorker(
+  req: Request,
+  res: Response,
+) {
+  const expectedToken = env.SHIPROCKET_WORKER_TOKEN;
+
+  if (!expectedToken) {
+    return res.status(503).json({
+      success: false,
+      message: "Shiprocket worker is not configured.",
+    });
+  }
+
+  const suppliedToken = req.get("x-worker-token") ?? "";
+
+  const expected = Buffer.from(expectedToken);
+  const supplied = Buffer.from(suppliedToken);
+
+  const valid =
+    expected.length === supplied.length &&
+    timingSafeEqual(expected, supplied);
+
+  if (!valid) {
+    return res.status(401).json({
+      success: false,
+      message: "Invalid worker token.",
+    });
+  }
+
+  try {
+    const result = await processShiprocketJobs();
+
+    return res.status(200).json({
+      success: true,
+      message: "Shiprocket worker executed.",
+      data: result,
+    });
+  } catch (error) {
+    console.error(
+      "SHIPROCKET WORKER ERROR:",
+      error instanceof Error ? error.message : "Unknown error",
+    );
+
+    return res.status(500).json({
+      success: false,
+      message: "Shiprocket worker execution failed.",
     });
   }
 }
