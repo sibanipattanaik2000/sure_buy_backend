@@ -11,10 +11,6 @@ import { prisma } from "../config/prisma";
 import { razorpay } from "../config/razorpay";
 import { env } from "../config/env";
 import { issueGiftCardForPaidOrder } from "./gift.service";
-import {
-  processAutomaticShiprocketShipment,
-  isShiprocketOperationUncertain,
-} from "./auto-shiprocket.service";
 
 const RAZORPAY_PROVIDER = "RAZORPAY";
 const COD_ADVANCE_AMOUNT = 500;
@@ -742,6 +738,7 @@ export async function initiateRazorpayRefund(
  *
  * Stock is deducted ONLY here.
  */
+
 export async function processCapturedPayment(
   providerOrderId: string,
   providerPaymentId: string,
@@ -800,7 +797,7 @@ export async function processCapturedPayment(
         throw new Error("PAYMENT_NOT_FOUND");
       }
 
-      // Verify the payment ID before accepting an idempotent retry.
+      // Verify payment ID before accepting an idempotent retry.
       if (
         payment.providerPaymentId &&
         payment.providerPaymentId !== providerPaymentId
@@ -808,6 +805,8 @@ export async function processCapturedPayment(
         throw new Error("PAYMENT_ID_MISMATCH");
       }
 
+      // Already-paid payment: return safely.
+      // Queue recovery happens after the transaction.
       if (payment.status === PaymentStatus.PAID) {
         return {
           success: true,
@@ -820,6 +819,7 @@ export async function processCapturedPayment(
         };
       }
 
+      // Do not process payments already being refunded.
       if (
         payment.status === PaymentStatus.REFUND_PENDING ||
         payment.status === PaymentStatus.REFUNDED ||
@@ -836,6 +836,7 @@ export async function processCapturedPayment(
         };
       }
 
+      // Payment captured after order cancellation.
       if (payment.order.status === OrderStatus.CANCELLED) {
         const reason = "Payment captured after order cancellation";
 
@@ -920,8 +921,7 @@ export async function processCapturedPayment(
         throw error;
       }
 
-      // An individual captured Razorpay transaction is PAID.
-      // PARTIALLY_PAID belongs to the overall order, not this transaction.
+      // Individual captured Razorpay transaction is PAID.
       const updatedPayment = await tx.payment.update({
         where: { id: payment.id },
         data: {
@@ -956,6 +956,7 @@ export async function processCapturedPayment(
         where: { id: payment.orderId },
         data: {
           paymentStatus: nextPaymentStatus,
+
           // Never downgrade an order already being fulfilled.
           ...(payment.order.status === OrderStatus.PENDING
             ? { status: OrderStatus.CONFIRMED }
@@ -963,7 +964,7 @@ export async function processCapturedPayment(
         },
       });
 
-      // Only remove cart quantities when this capture first deducted stock.
+      // Remove cart quantities only when this capture first deducted stock.
       if (stockWasDeducted) {
         await removePurchasedCartItems(
           tx,
@@ -971,7 +972,8 @@ export async function processCapturedPayment(
           payment.orderId,
         );
       }
-            // Create the Shiprocket job atomically with successful payment.
+
+      // Create the Shiprocket job atomically with successful payment.
       // Duplicate payment webhooks cannot create duplicate jobs.
       await tx.shiprocketJob.upsert({
         where: {
@@ -1004,6 +1006,7 @@ export async function processCapturedPayment(
     },
   );
 
+  // Handle refunds outside the payment transaction.
   if (refundRequired) {
     try {
       const refund = await initiateRazorpayRefund(
@@ -1030,9 +1033,10 @@ export async function processCapturedPayment(
       };
     }
   }
-  // Recovery for orders that were already marked PAID before
+
+  // Recovery for orders that were already paid before
   // the Shiprocket queue was introduced.
-  if (!refundRequired && result.success && result.orderId) {
+  if (result.success && result.orderId) {
     try {
       await prisma.shiprocketJob.upsert({
         where: {
@@ -1045,83 +1049,22 @@ export async function processCapturedPayment(
         update: {},
       });
     } catch (error) {
-      // Payment has already succeeded. Never report it as failed
+      // Never report a successful payment as failed
       // because the background queue could not be updated.
       console.error("SHIPROCKET JOB ENQUEUE ERROR:", error);
     }
   }
-let shipmentResult:
-  | {
-      success: true;
-      data: Awaited<
-        ReturnType<typeof processAutomaticShiprocketShipment>
-      >;
+
+  // Gift card issuance remains independent of shipment processing.
+  if (result.success && result.orderId) {
+    try {
+      await issueGiftCardForPaidOrder(result.orderId);
+    } catch (giftError) {
+      console.error("GIFT_CARD_ISSUE_FAILED:", giftError);
     }
-  | {
-      success: false;
-      error: string;
-      retryable: boolean;
-    }
-  | undefined;
-
-if (!refundRequired && result.success && result.orderId) {
-  try {
-    const shipment = await processAutomaticShiprocketShipment(
-      result.orderId,
-    );
-
-let shipmentResult:
-  | {
-      success: boolean;
-      data?: Awaited<
-        ReturnType<typeof processAutomaticShiprocketShipment>
-      >;
-      error?: string;
-      retryable?: boolean;
-    }
-  | undefined;
-  } catch (shipmentError) {
-    const message =
-      shipmentError instanceof Error
-        ? shipmentError.message
-        : "Unknown Shiprocket error";
-
-    const latestOrder = await prisma.order.findUnique({
-      where: { id: result.orderId },
-      select: { shiprocketStatus: true },
-    });
-
-    const retryable = !isShiprocketOperationUncertain(
-      latestOrder?.shiprocketStatus ?? null,
-    );
-
-    shipmentResult = {
-      success: false,
-      error: message,
-      retryable,
-    };
-
-    console.error("AUTOMATIC SHIPROCKET PROCESS FAILED:", {
-      orderId: result.orderId,
-      message,
-      retryable,
-    });
   }
-}
 
-if (!refundRequired && result.success && result.orderId) {
-  try {
-    await issueGiftCardForPaidOrder(result.orderId);
-  } catch (giftError) {
-    console.error("GIFT_CARD_ISSUE_FAILED:", giftError);
-  }
-}
-
-return {
-  ...result,
-  ...(shipmentResult ? { shipment: shipmentResult } : {}),
-};
-
+  return result;
 }
 
 /**
