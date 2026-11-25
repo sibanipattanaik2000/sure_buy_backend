@@ -25,12 +25,30 @@ const shiprocketOrderSelect = {
   shiprocketStatus: true,
   shiprocketLabelUrl: true,
   shiprocketManifestUrl: true,
+  payments: {
+    select: {
+      status: true,
+      refunds: {
+        select: {
+          status: true,
+        },
+      },
+    },
+  },
 } as const;
 
 const REFUND_STATUSES = new Set<PaymentStatus>([
   PaymentStatus.REFUND_PENDING,
   PaymentStatus.REFUNDED,
   PaymentStatus.PARTIALLY_REFUNDED,
+]);
+
+// These refund states are terminal and do not represent an
+// unresolved refund operation.
+const TERMINAL_REFUND_STATUSES = new Set([
+  "PROCESSED",
+  "FAILED",
+  "CANCELLED",
 ]);
 
 const UNCERTAIN_STATUSES = new Set([
@@ -40,7 +58,31 @@ const UNCERTAIN_STATUSES = new Set([
   "AWB_ASSIGNMENT_UNCERTAIN",
   "PICKUP_REQUESTING",
   "PICKUP_REQUEST_UNCERTAIN",
+  "LABEL_GENERATING",
+  "LABEL_GENERATION_UNCERTAIN",
+  "MANIFEST_GENERATING",
+  "MANIFEST_GENERATION_UNCERTAIN",
 ]);
+
+function hasRefundActivity(order: {
+  paymentStatus: PaymentStatus;
+  payments: Array<{
+    status: PaymentStatus;
+    refunds: Array<{ status: string }>;
+  }>;
+}): boolean {
+  return (
+    REFUND_STATUSES.has(order.paymentStatus) ||
+    order.payments.some(
+      (payment) =>
+        REFUND_STATUSES.has(payment.status) ||
+        payment.refunds.some(
+          (refund) =>
+            !TERMINAL_REFUND_STATUSES.has(refund.status),
+        ),
+    )
+  );
+}
 
 export async function processAutomaticShiprocketShipment(
   orderId: string,
@@ -62,12 +104,28 @@ export async function processAutomaticShiprocketShipment(
     };
   }
 
-  if (REFUND_STATUSES.has(order.paymentStatus)) {
+  // Never dispatch an order while any payment has an unresolved
+  // refund or a refund-pending/refunded payment status.
+  if (
+    REFUND_STATUSES.has(order.paymentStatus) ||
+    hasRefundActivity(order)
+  ) {
     return {
       success: false,
       skipped: true,
       reason: "ORDER_HAS_REFUND_ACTIVITY",
     };
+  }
+
+  // An uncertain external operation must be reconciled manually.
+  // Never blindly repeat a request that Shiprocket may have accepted.
+  if (
+    order.shiprocketStatus &&
+    UNCERTAIN_STATUSES.has(order.shiprocketStatus)
+  ) {
+    throw new Error(
+      `SHIPROCKET_OPERATION_REQUIRES_MANUAL_REVIEW:${order.shiprocketStatus}`,
+    );
   }
 
   // These conditions are retryable, not permanent skips.
@@ -102,12 +160,17 @@ export async function processAutomaticShiprocketShipment(
         where: { id: orderId },
         select: {
           shiprocketShipmentId: true,
+          shiprocketStatus: true,
         },
       });
 
-      // Do not create another shipment if the first
-      // request may already have succeeded.
-      if (!latest?.shiprocketShipmentId) {
+      // Do not create another shipment if the first request
+      // may already have succeeded.
+      if (
+        !latest?.shiprocketShipmentId ||
+        (latest.shiprocketStatus &&
+          UNCERTAIN_STATUSES.has(latest.shiprocketStatus))
+      ) {
         throw error;
       }
     }
@@ -120,6 +183,15 @@ export async function processAutomaticShiprocketShipment(
 
   if (!order?.shiprocketShipmentId) {
     throw new Error("SHIPROCKET_SHIPMENT_NOT_CREATED");
+  }
+
+  if (
+    order.shiprocketStatus &&
+    UNCERTAIN_STATUSES.has(order.shiprocketStatus)
+  ) {
+    throw new Error(
+      `SHIPROCKET_OPERATION_REQUIRES_MANUAL_REVIEW:${order.shiprocketStatus}`,
+    );
   }
 
   const shipmentId = Number(order.shiprocketShipmentId);
@@ -138,8 +210,21 @@ export async function processAutomaticShiprocketShipment(
     select: shiprocketOrderSelect,
   });
 
-  if (!latest?.shiprocketAwbCode) {
+  if (!latest) {
+    throw new Error("ORDER_NOT_FOUND");
+  }
+
+  if (!latest.shiprocketAwbCode) {
     throw new Error("SHIPROCKET_AWB_REQUIRED");
+  }
+
+  if (
+    latest.shiprocketStatus &&
+    UNCERTAIN_STATUSES.has(latest.shiprocketStatus)
+  ) {
+    throw new Error(
+      `SHIPROCKET_OPERATION_REQUIRES_MANUAL_REVIEW:${latest.shiprocketStatus}`,
+    );
   }
 
   // STEP 3: GENERATE SHIPPING LABEL.
@@ -173,6 +258,15 @@ export async function processAutomaticShiprocketShipment(
     throw new Error("SHIPROCKET_AWB_REQUIRED");
   }
 
+  if (
+    latest.shiprocketStatus &&
+    UNCERTAIN_STATUSES.has(latest.shiprocketStatus)
+  ) {
+    throw new Error(
+      `SHIPROCKET_OPERATION_REQUIRES_MANUAL_REVIEW:${latest.shiprocketStatus}`,
+    );
+  }
+
   const pickupAlreadyRequested =
     latest.shiprocketStatus === "PICKUP REQUESTED" ||
     latest.shiprocketStatus === "PICKUP SCHEDULED";
@@ -201,6 +295,15 @@ export async function processAutomaticShiprocketShipment(
 
   if (!pickupConfirmed) {
     throw new Error("SHIPROCKET_PICKUP_NOT_CONFIRMED");
+  }
+
+  if (
+    latest.shiprocketStatus &&
+    UNCERTAIN_STATUSES.has(latest.shiprocketStatus)
+  ) {
+    throw new Error(
+      `SHIPROCKET_OPERATION_REQUIRES_MANUAL_REVIEW:${latest.shiprocketStatus}`,
+    );
   }
 
   if (!latest.shiprocketManifestUrl) {
