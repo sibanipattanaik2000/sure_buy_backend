@@ -100,6 +100,17 @@ function serializeAdminOrder(order: any) {
       pickupScheduledAt: order.shiprocketPickupScheduledAt ?? null,
       shippedAt: order.shiprocketShippedAt ?? null,
       deliveredAt: order.shiprocketDeliveredAt ?? null,
+      labelUrl: order.shiprocketLabelUrl ?? null,
+      manifestUrl: order.shiprocketManifestUrl ?? null,
+
+      job: order.shiprocketJob
+        ? {
+            status: order.shiprocketJob.status,
+            attempts: order.shiprocketJob.attempts,
+            nextAttemptAt: order.shiprocketJob.nextAttemptAt,
+            lastError: order.shiprocketJob.lastError,
+          }
+        : null,
     },
 
     customer: {
@@ -674,6 +685,14 @@ const ADMIN_ORDER_INCLUDE = {
           createdAt: "asc" as const,
         },
       },
+    },
+  },
+  shiprocketJob: {
+    select: {
+      status: true,
+      attempts: true,
+      nextAttemptAt: true,
+      lastError: true,
     },
   },
 } satisfies Prisma.OrderInclude;

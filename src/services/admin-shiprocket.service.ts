@@ -15,6 +15,7 @@ import {
   type ShiprocketCreateOrderPayload,
   assignShiprocketAwb,
   scheduleShiprocketPickup,
+  generateShiprocketLabel,
   generateShiprocketManifest,
 } from "./shiprocket.service";
 
@@ -810,52 +811,315 @@ export async function scheduleAdminShiprocketPickup(orderId: string) {
 }
 
 /**
- * Generate a manifest for a shipment after pickup has been requested.
+ * Generate and persist a Shiprocket label safely.
+ *
+ * The order row is locked and LABEL_GENERATING is saved before
+ * contacting Shiprocket. An uncertain request is never repeated
+ * automatically because Shiprocket may already have generated it.
  */
-export async function generateAdminShiprocketManifest(orderId: string) {
-  const order = await prisma.order.findUnique({
-    where: { id: orderId },
-    select: {
-      id: true,
-      shiprocketShipmentId: true,
-      shiprocketAwbCode: true,
-      shiprocketPickupScheduledAt: true,
-      shiprocketStatus: true,
+export async function generateAdminShiprocketLabel(orderId: string) {
+  const reservation = await prisma.$transaction(
+    async (tx) => {
+      await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT "id"
+        FROM "Order"
+        WHERE "id" = ${orderId}
+        FOR UPDATE
+      `;
+
+      const order = await tx.order.findUnique({
+        where: { id: orderId },
+        select: {
+          id: true,
+          shiprocketShipmentId: true,
+          shiprocketAwbCode: true,
+          shiprocketLabelUrl: true,
+          shiprocketStatus: true,
+        },
+      });
+
+      if (!order) throw new Error("ORDER_NOT_FOUND");
+
+      if (order.shiprocketLabelUrl) {
+        return {
+          alreadyGenerated: true,
+          labelUrl: order.shiprocketLabelUrl,
+          shipmentId: order.shiprocketShipmentId,
+          previousStatus: order.shiprocketStatus,
+        };
+      }
+
+      if (!order.shiprocketShipmentId) {
+        throw new Error("SHIPROCKET_SHIPMENT_NOT_CREATED");
+      }
+
+      if (!order.shiprocketAwbCode) {
+        throw new Error("SHIPROCKET_AWB_REQUIRED");
+      }
+
+      if (
+        order.shiprocketStatus === "LABEL_GENERATING" ||
+        order.shiprocketStatus === "LABEL_GENERATION_UNCERTAIN"
+      ) {
+        throw new Error("SHIPROCKET_LABEL_GENERATION_IN_PROGRESS");
+      }
+
+      await tx.order.update({
+        where: { id: order.id },
+        data: {
+          shiprocketStatus: "LABEL_GENERATING",
+          shiprocketLastEventAt: new Date(),
+        },
+      });
+
+      return {
+        alreadyGenerated: false,
+        labelUrl: null,
+        shipmentId: order.shiprocketShipmentId,
+        previousStatus: order.shiprocketStatus,
+      };
     },
-  });
+    {
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      timeout: 15000,
+    },
+  );
 
-  if (!order) throw new Error("ORDER_NOT_FOUND");
-
-  if (!order.shiprocketShipmentId) {
-    throw new Error("SHIPROCKET_SHIPMENT_NOT_CREATED");
-  }
-
-  if (!order.shiprocketAwbCode) {
-    throw new Error("SHIPROCKET_AWB_REQUIRED");
-  }
-
-  if (
-    !order.shiprocketPickupScheduledAt &&
-    order.shiprocketStatus !== "PICKUP REQUESTED" &&
-    order.shiprocketStatus !== "PICKUP SCHEDULED"
-  ) {
-    throw new Error("SHIPROCKET_MANIFEST_REQUIRES_PICKUP");
-  }
-
-  const shipmentId = Number(order.shiprocketShipmentId);
-
-  if (!Number.isInteger(shipmentId) || shipmentId <= 0) {
-    throw new Error("INVALID_SHIPROCKET_SHIPMENT_ID");
+  if (reservation.alreadyGenerated) {
+    return {
+      alreadyGenerated: true,
+      labelUrl: reservation.labelUrl,
+      shipmentId: reservation.shipmentId,
+    };
   }
 
   try {
-    return await generateShiprocketManifest(shipmentId);
+    const shipmentId = Number(reservation.shipmentId);
+
+    if (!Number.isInteger(shipmentId) || shipmentId <= 0) {
+      throw new Error("INVALID_SHIPROCKET_SHIPMENT_ID");
+    }
+
+    const response = await generateShiprocketLabel(shipmentId);
+    const labelUrl = response.label_url?.trim();
+
+    if (!labelUrl || !/^https?:\/\//i.test(labelUrl)) {
+      // Shiprocket may have generated the label even though its
+      // response did not contain a usable URL. Treat as uncertain.
+      throw new Error("SHIPROCKET_LABEL_RESPONSE_UNCLEAR");
+    }
+
+    const saved = await prisma.order.updateMany({
+      where: {
+        id: orderId,
+        shiprocketStatus: "LABEL_GENERATING",
+        shiprocketLabelUrl: null,
+      },
+      data: {
+        shiprocketLabelUrl: labelUrl,
+        shiprocketStatus: reservation.previousStatus,
+        shiprocketLastEventAt: new Date(),
+      },
+    });
+
+    if (saved.count !== 1) {
+      throw new Error("SHIPROCKET_LABEL_SAVE_UNCERTAIN");
+    }
+
+    return {
+      alreadyGenerated: false,
+      labelUrl,
+      shipmentId: reservation.shipmentId,
+    };
   } catch (error) {
+    const rejected = isDefiniteShiprocketRejection(error);
+
+    await prisma.order.updateMany({
+      where: {
+        id: orderId,
+        shiprocketStatus: "LABEL_GENERATING",
+        shiprocketLabelUrl: null,
+      },
+      data: {
+        shiprocketStatus: rejected
+          ? reservation.previousStatus
+          : "LABEL_GENERATION_UNCERTAIN",
+        shiprocketLastEventAt: new Date(),
+      },
+    });
+
+    console.error(
+      "SHIPROCKET LABEL ERROR:",
+      error instanceof Error ? error.message : "Unknown error",
+    );
+
+    throw new Error(
+      rejected
+        ? "SHIPROCKET_LABEL_GENERATION_REJECTED"
+        : "SHIPROCKET_LABEL_GENERATION_UNCERTAIN",
+    );
+  }
+}
+
+/**
+ * Generate and persist a Shiprocket manifest safely.
+ *
+ * Uses the same reservation pattern as label generation.
+ * The URL is saved here, so both automatic and manual flows
+ * use exactly the same implementation.
+ */
+export async function generateAdminShiprocketManifest(orderId: string) {
+  const reservation = await prisma.$transaction(
+    async (tx) => {
+      await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT "id"
+        FROM "Order"
+        WHERE "id" = ${orderId}
+        FOR UPDATE
+      `;
+
+      const order = await tx.order.findUnique({
+        where: { id: orderId },
+        select: {
+          id: true,
+          shiprocketShipmentId: true,
+          shiprocketAwbCode: true,
+          shiprocketPickupScheduledAt: true,
+          shiprocketManifestUrl: true,
+          shiprocketStatus: true,
+        },
+      });
+
+      if (!order) throw new Error("ORDER_NOT_FOUND");
+
+      if (order.shiprocketManifestUrl) {
+        return {
+          alreadyGenerated: true,
+          manifestUrl: order.shiprocketManifestUrl,
+          shipmentId: order.shiprocketShipmentId,
+          previousStatus: order.shiprocketStatus,
+        };
+      }
+
+      if (!order.shiprocketShipmentId) {
+        throw new Error("SHIPROCKET_SHIPMENT_NOT_CREATED");
+      }
+
+      if (!order.shiprocketAwbCode) {
+        throw new Error("SHIPROCKET_AWB_REQUIRED");
+      }
+
+      if (
+        !order.shiprocketPickupScheduledAt &&
+        order.shiprocketStatus !== "PICKUP REQUESTED" &&
+        order.shiprocketStatus !== "PICKUP SCHEDULED"
+      ) {
+        throw new Error("SHIPROCKET_MANIFEST_REQUIRES_PICKUP");
+      }
+
+      if (
+        order.shiprocketStatus === "MANIFEST_GENERATING" ||
+        order.shiprocketStatus === "MANIFEST_GENERATION_UNCERTAIN"
+      ) {
+        throw new Error("SHIPROCKET_MANIFEST_GENERATION_IN_PROGRESS");
+      }
+
+      await tx.order.update({
+        where: { id: order.id },
+        data: {
+          shiprocketStatus: "MANIFEST_GENERATING",
+          shiprocketLastEventAt: new Date(),
+        },
+      });
+
+      return {
+        alreadyGenerated: false,
+        manifestUrl: null,
+        shipmentId: order.shiprocketShipmentId,
+        previousStatus: order.shiprocketStatus,
+      };
+    },
+    {
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      timeout: 15000,
+    },
+  );
+
+  if (reservation.alreadyGenerated) {
+    return {
+      alreadyGenerated: true,
+      manifestUrl: reservation.manifestUrl,
+      shipmentId: reservation.shipmentId,
+    };
+  }
+
+  try {
+    const shipmentId = Number(reservation.shipmentId);
+
+    if (!Number.isInteger(shipmentId) || shipmentId <= 0) {
+      throw new Error("INVALID_SHIPROCKET_SHIPMENT_ID");
+    }
+
+    const response = await generateShiprocketManifest(shipmentId);
+    const manifestUrl = response.manifest_url?.trim();
+
+    if (
+      String(response.status) !== "1" ||
+      !manifestUrl ||
+      !/^https?:\/\//i.test(manifestUrl)
+    ) {
+      throw new Error("SHIPROCKET_MANIFEST_RESPONSE_UNCLEAR");
+    }
+
+    const saved = await prisma.order.updateMany({
+      where: {
+        id: orderId,
+        shiprocketStatus: "MANIFEST_GENERATING",
+        shiprocketManifestUrl: null,
+      },
+      data: {
+        shiprocketManifestUrl: manifestUrl,
+        shiprocketStatus: reservation.previousStatus,
+        shiprocketLastEventAt: new Date(),
+      },
+    });
+
+    if (saved.count !== 1) {
+      throw new Error("SHIPROCKET_MANIFEST_SAVE_UNCERTAIN");
+    }
+
+    return {
+      alreadyGenerated: false,
+      manifestUrl,
+      shipmentId: reservation.shipmentId,
+      response,
+    };
+  } catch (error) {
+    const rejected = isDefiniteShiprocketRejection(error);
+
+    await prisma.order.updateMany({
+      where: {
+        id: orderId,
+        shiprocketStatus: "MANIFEST_GENERATING",
+        shiprocketManifestUrl: null,
+      },
+      data: {
+        shiprocketStatus: rejected
+          ? reservation.previousStatus
+          : "MANIFEST_GENERATION_UNCERTAIN",
+        shiprocketLastEventAt: new Date(),
+      },
+    });
+
     console.error(
       "SHIPROCKET MANIFEST ERROR:",
       error instanceof Error ? error.message : "Unknown error",
     );
 
-    throw new Error("SHIPROCKET_MANIFEST_FAILED");
+    throw new Error(
+      rejected
+        ? "SHIPROCKET_MANIFEST_GENERATION_REJECTED"
+        : "SHIPROCKET_MANIFEST_GENERATION_UNCERTAIN",
+    );
   }
 }

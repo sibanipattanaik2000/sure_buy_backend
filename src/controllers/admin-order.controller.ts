@@ -4,6 +4,7 @@ import {
   createAdminShiprocketShipment,
   assignAdminShiprocketAwb,
   scheduleAdminShiprocketPickup,
+  generateAdminShiprocketLabel,
   generateAdminShiprocketManifest,
 } from "../services/admin-shiprocket.service";
 import {
@@ -73,6 +74,12 @@ function sendAdminOrderError(
     SHIPROCKET_AWB_ASSIGNMENT_REJECTED: 422,
     SHIPROCKET_PICKUP_REJECTED: 422,
     SHIPROCKET_PICKUP_RESPONSE_UNCLEAR: 502,
+    SHIPROCKET_LABEL_GENERATION_IN_PROGRESS: 409,
+    SHIPROCKET_LABEL_GENERATION_UNCERTAIN: 502,
+    SHIPROCKET_LABEL_GENERATION_REJECTED: 422,
+    SHIPROCKET_MANIFEST_GENERATION_IN_PROGRESS: 409,
+    SHIPROCKET_MANIFEST_GENERATION_UNCERTAIN: 502,
+    SHIPROCKET_MANIFEST_GENERATION_REJECTED: 422,
   };
 
   const status = statusByError[message];
@@ -467,6 +474,42 @@ export async function generateAdminShiprocketManifestController(
     return res.status(200).json({
       success: true,
       message: "Manifest generated successfully",
+      data: result,
+    });
+  } catch (error) {
+    return sendAdminOrderError(error, res, next);
+  }
+}
+
+export async function generateAdminShiprocketLabelController(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    if (!req.userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Authentication required",
+      });
+    }
+
+    const orderId = String(req.params.orderId ?? "").trim();
+
+    if (!orderId) {
+      return res.status(400).json({
+        success: false,
+        message: "Order ID is required",
+      });
+    }
+
+    const result = await generateAdminShiprocketLabel(orderId);
+
+    return res.status(200).json({
+      success: true,
+      message: result.alreadyGenerated
+        ? "Shipping label already exists"
+        : "Shipping label generated successfully",
       data: result,
     });
   } catch (error) {

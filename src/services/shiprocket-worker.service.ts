@@ -11,6 +11,10 @@ const UNCERTAIN_STATUSES = new Set([
   "AWB_ASSIGNMENT_UNCERTAIN",
   "PICKUP_REQUESTING",
   "PICKUP_REQUEST_UNCERTAIN",
+  "LABEL_GENERATING",
+  "LABEL_GENERATION_UNCERTAIN",
+  "MANIFEST_GENERATING",
+  "MANIFEST_GENERATION_UNCERTAIN",
 ]);
 
 type ClaimedJob = {
@@ -195,10 +199,7 @@ export async function processShiprocketJobs() {
 
       const currentStatus = order.shiprocketStatus;
 
-      if (
-        currentStatus &&
-        UNCERTAIN_STATUSES.has(currentStatus)
-      ) {
+      if (currentStatus && UNCERTAIN_STATUSES.has(currentStatus)) {
         await prisma.shiprocketJob.update({
           where: { id: job.id },
           data: {
@@ -212,9 +213,7 @@ export async function processShiprocketJobs() {
         continue;
       }
 
-      const result = await processAutomaticShiprocketShipment(
-        job.orderId,
-      );
+      const result = await processAutomaticShiprocketShipment(job.orderId);
 
       if (result.success) {
         await markJobCompleted(job.id);

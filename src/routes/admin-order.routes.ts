@@ -14,6 +14,7 @@ import {
   createAdminShiprocketShipmentController,
   assignAdminShiprocketAwbController,
   scheduleAdminShiprocketPickupController,
+  generateAdminShiprocketLabelController,
   generateAdminShiprocketManifestController,
 } from "../controllers/admin-order.controller";
 
@@ -47,7 +48,10 @@ router.post(
   "/:orderId/shiprocket/pickup",
   scheduleAdminShiprocketPickupController,
 );
-
+router.post(
+  "/:orderId/shiprocket/label",
+  generateAdminShiprocketLabelController,
+);
 router.post(
   "/:orderId/shiprocket/manifest",
   generateAdminShiprocketManifestController,

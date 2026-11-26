@@ -1,4 +1,3 @@
-
 import { OrderStatus, PaymentStatus } from "@prisma/client";
 
 import { prisma } from "../config/prisma";
@@ -7,6 +6,7 @@ import {
   createAdminShiprocketShipment,
   assignAdminShiprocketAwb,
   scheduleAdminShiprocketPickup,
+  generateAdminShiprocketLabel,
   generateAdminShiprocketManifest,
 } from "./admin-shiprocket.service";
 
@@ -45,11 +45,7 @@ const REFUND_STATUSES = new Set<PaymentStatus>([
 
 // These refund states are terminal and do not represent an
 // unresolved refund operation.
-const TERMINAL_REFUND_STATUSES = new Set([
-  "PROCESSED",
-  "FAILED",
-  "CANCELLED",
-]);
+const TERMINAL_REFUND_STATUSES = new Set(["PROCESSED", "FAILED", "CANCELLED"]);
 
 const UNCERTAIN_STATUSES = new Set([
   "CREATING",
@@ -77,16 +73,13 @@ function hasRefundActivity(order: {
       (payment) =>
         REFUND_STATUSES.has(payment.status) ||
         payment.refunds.some(
-          (refund) =>
-            !TERMINAL_REFUND_STATUSES.has(refund.status),
+          (refund) => !TERMINAL_REFUND_STATUSES.has(refund.status),
         ),
     )
   );
 }
 
-export async function processAutomaticShiprocketShipment(
-  orderId: string,
-) {
+export async function processAutomaticShiprocketShipment(orderId: string) {
   let order = await prisma.order.findUnique({
     where: { id: orderId },
     select: shiprocketOrderSelect,
@@ -106,10 +99,7 @@ export async function processAutomaticShiprocketShipment(
 
   // Never dispatch an order while any payment has an unresolved
   // refund or a refund-pending/refunded payment status.
-  if (
-    REFUND_STATUSES.has(order.paymentStatus) ||
-    hasRefundActivity(order)
-  ) {
+  if (REFUND_STATUSES.has(order.paymentStatus) || hasRefundActivity(order)) {
     return {
       success: false,
       skipped: true,
@@ -229,19 +219,7 @@ export async function processAutomaticShiprocketShipment(
 
   // STEP 3: GENERATE SHIPPING LABEL.
   if (!latest.shiprocketLabelUrl) {
-    const label = await generateShiprocketLabel(shipmentId);
-    const labelUrl = label.label_url?.trim();
-
-    if (!labelUrl || !/^https?:\/\//i.test(labelUrl)) {
-      throw new Error("SHIPROCKET_LABEL_GENERATION_FAILED");
-    }
-
-    await prisma.order.update({
-      where: { id: orderId },
-      data: {
-        shiprocketLabelUrl: labelUrl,
-      },
-    });
+    await generateAdminShiprocketLabel(orderId);
   }
 
   // STEP 4: REQUEST PICKUP.
@@ -271,60 +249,14 @@ export async function processAutomaticShiprocketShipment(
     latest.shiprocketStatus === "PICKUP REQUESTED" ||
     latest.shiprocketStatus === "PICKUP SCHEDULED";
 
-  if (
-    !latest.shiprocketPickupScheduledAt &&
-    !pickupAlreadyRequested
-  ) {
+  if (!latest.shiprocketPickupScheduledAt && !pickupAlreadyRequested) {
     await scheduleAdminShiprocketPickup(orderId);
   }
 
   // STEP 5: GENERATE MANIFEST AFTER PICKUP.
-  latest = await prisma.order.findUnique({
-    where: { id: orderId },
-    select: shiprocketOrderSelect,
-  });
-
-  if (!latest) {
-    throw new Error("ORDER_NOT_FOUND");
-  }
-
-  const pickupConfirmed =
-    Boolean(latest.shiprocketPickupScheduledAt) ||
-    latest.shiprocketStatus === "PICKUP REQUESTED" ||
-    latest.shiprocketStatus === "PICKUP SCHEDULED";
-
-  if (!pickupConfirmed) {
-    throw new Error("SHIPROCKET_PICKUP_NOT_CONFIRMED");
-  }
-
-  if (
-    latest.shiprocketStatus &&
-    UNCERTAIN_STATUSES.has(latest.shiprocketStatus)
-  ) {
-    throw new Error(
-      `SHIPROCKET_OPERATION_REQUIRES_MANUAL_REVIEW:${latest.shiprocketStatus}`,
-    );
-  }
 
   if (!latest.shiprocketManifestUrl) {
-    const manifest = await generateAdminShiprocketManifest(orderId);
-
-    const manifestUrl = manifest.manifest_url?.trim();
-
-    if (
-      !manifestUrl ||
-      !/^https?:\/\//i.test(manifestUrl) ||
-      String(manifest.status) !== "1"
-    ) {
-      throw new Error("SHIPROCKET_MANIFEST_GENERATION_FAILED");
-    }
-
-    await prisma.order.update({
-      where: { id: orderId },
-      data: {
-        shiprocketManifestUrl: manifestUrl,
-      },
-    });
+    await generateAdminShiprocketManifest(orderId);
   }
 
   // STEP 6: VERIFY FINAL LOCAL RECORD.
@@ -358,8 +290,6 @@ export async function processAutomaticShiprocketShipment(
   };
 }
 
-export function isShiprocketOperationUncertain(
-  status: string | null,
-) {
+export function isShiprocketOperationUncertain(status: string | null) {
   return status !== null && UNCERTAIN_STATUSES.has(status);
 }
